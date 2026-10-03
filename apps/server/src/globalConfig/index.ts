@@ -5,6 +5,7 @@ import urlJoin from 'url-join';
 
 import { composioEnv } from '@/config/composio';
 import { isDesktop } from '@/const/version';
+import { agentIdentityEnv } from '@/envs/agentIdentity';
 import { appEnv, getAppConfig } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
 import { fileEnv } from '@/envs/file';
@@ -125,6 +126,10 @@ export const getServerGlobalConfig = async () => {
   }
 
   const config: GlobalServerConfig = {
+    agentIdentityProviders: [
+      agentIdentityEnv.ENABLED_AGENT_MAIL ? 'agent-mail' : null,
+      agentIdentityEnv.ENABLED_LINQ ? 'linq' : null,
+    ].filter((provider): provider is string => !!provider),
     aiProvider: await genServerAiProvidersConfig(aiProviderSpecificConfig),
     defaultAgent: {
       config: parseAgentConfig(DEFAULT_AGENT_CONFIG),
