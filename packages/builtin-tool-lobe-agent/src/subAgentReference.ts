@@ -39,3 +39,13 @@ export const appendSubAgentReference = (content: string, subAgentId: string): st
 
   return body ? `${body}\n\n${reference}` : reference;
 };
+
+/**
+ * Tool result of a `callSubAgent({ runInBackground: true })` call — what the
+ * parent sees in place of the answer, which arrives later as its own message.
+ */
+export const buildBackgroundSubAgentReceipt = (subAgentId: string): string =>
+  appendSubAgentReference(
+    'Sub-agent started in the background. Its result will be delivered to you as a new message when it finishes — do not wait or poll for it. Continue with other work, or end your turn and tell the user what is running.',
+    subAgentId,
+  );

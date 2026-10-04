@@ -60,6 +60,7 @@ import { ComposioService } from '@/server/services/composio';
 import { MarketService } from '@/server/services/market';
 import { markdownToTxt } from '@/utils/markdownToTxt';
 
+import { deliverBackgroundSubAgentResults } from './backgroundSubAgentDelivery';
 import { createGraphAwareAgentFactory } from './helpers/agentFactory';
 import {
   createGroupActionMemberBridgeHook,
@@ -180,6 +181,7 @@ export class AiAgentService {
       //
       // Arrow fields are auto-bound, so no `.bind(this)`.
       delegate: {
+        deliverBackgroundSubAgentResults: this.deliverBackgroundSubAgentResults,
         execSubAgent: this.execSubAgent,
         execVirtualSubAgent: this.execVirtualSubAgent,
         execGroupMember: this.execGroupMember,
@@ -1717,6 +1719,7 @@ export class AiAgentService {
    */
   execVirtualSubAgent = async (params: ExecVirtualSubAgentParams): Promise<ExecSubAgentResult> =>
     execAgentThreadRun(this.subAgentRunDeps, params, {
+      background: params.background,
       chatConfig: params.chatConfig,
       deviceId: params.deviceId,
       isSubAgent: true,
@@ -1729,6 +1732,24 @@ export class AiAgentService {
       provider: params.provider,
       resumeParentOnComplete: true,
     });
+
+  /**
+   * Hand a topic's finished background sub-agent results to their parent agent
+   * as a new turn — see `backgroundSubAgentDelivery`. Runtime delegate entry.
+   */
+  deliverBackgroundSubAgentResults = (params: {
+    settledOperationId?: string;
+    topicId: string;
+  }): Promise<void> =>
+    deliverBackgroundSubAgentResults(
+      {
+        agentOperationModel: this.agentOperationModel,
+        execAgent: (execParams) => this.execAgent(execParams),
+        messageModel: this.messageModel,
+        topicModel: this.topicModel,
+      },
+      params,
+    );
 
   /**
    * An approval continuation retires the parked member op, which silently

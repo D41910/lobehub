@@ -601,6 +601,12 @@ export interface ExecVirtualSubAgentParams {
   /** The agent ID to execute */
   agentId: string;
   /**
+   * Detached run (`callSubAgent({ runInBackground })`): the parent is not
+   * parked on it, its placeholder already holds the start receipt, and the
+   * answer is delivered to the parent as a separate message on completion.
+   */
+  background?: boolean;
+  /**
    * chatConfig overrides (thinking / reasoning-effort extend params) for the
    * sub-agent run, from the parent agent's `agencyConfig.subagent.chatConfig`.
    * Merged over the executing agent's own chatConfig, skipping nulled keys.

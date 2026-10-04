@@ -185,7 +185,16 @@ export function createThreadHooks(
   sourceMessageId: string | undefined,
   logScope: 'execSubAgent' | 'execVirtualSubAgent',
   usageBaseline: ThreadUsageBaseline = {},
+  options: {
+    /**
+     * Copy the run's final answer into the source message. Off for background
+     * sub-agents, whose source message is the start receipt the parent already
+     * read — their answer is delivered as a separate message instead.
+     */
+    updateSourceMessage?: boolean;
+  } = {},
 ): AgentHook[] {
+  const { updateSourceMessage = true } = options;
   return [
     {
       handler: async (event: AgentHookEvent) => {
@@ -262,7 +271,7 @@ export function createThreadHooks(
             .reverse()
             .find((m: { role: string }) => m.role === 'assistant');
 
-          if (sourceMessageId && lastAssistantMessage?.content) {
+          if (updateSourceMessage && sourceMessageId && lastAssistantMessage?.content) {
             await messageModel.update(sourceMessageId, {
               content: lastAssistantMessage.content,
             });
