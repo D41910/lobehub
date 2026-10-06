@@ -104,4 +104,22 @@ describe('buildServerVirtualSubAgentRunner in background mode', () => {
     );
     expect(messageModel.updatePluginState).not.toHaveBeenCalled();
   });
+
+  // The right panel and the thread portal tell a sub-agent from an ordinary
+  // thread by the tool call that spawned it.
+  it('records the spawning tool call for a callSubAgent sub-agent only', async () => {
+    const { execVirtualSubAgent, runner } = buildRunner();
+
+    await runner.run({ description: 'research', instruction: 'go' });
+    await runner.run({ agentId: 'named-agent', description: 'ask', instruction: 'go' });
+
+    expect(execVirtualSubAgent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ sourceToolCallId: 'tool-call-1' }),
+    );
+    expect(execVirtualSubAgent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ sourceToolCallId: undefined }),
+    );
+  });
 });

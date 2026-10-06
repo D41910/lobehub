@@ -343,7 +343,9 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
     });
 
     it('records mux lifecycle notices in gatewayFeed, attaching once per mux', () => {
-      const { action, mux, state } = createTestAction();
+      const { action, mux, state } = createTestAction({
+        refreshTopic: vi.fn().mockResolvedValue(undefined),
+      });
 
       action.connectToGateway({
         gatewayUrl: GATEWAY_URL,
@@ -400,6 +402,94 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
       });
 
       expect(state.gatewayFeed).toEqual({});
+    });
+
+    describe('runs this tab did not start', () => {
+      const setup = () => {
+        const refreshTopic = vi.fn().mockResolvedValue(undefined);
+        const refreshMessages = vi.fn().mockResolvedValue(undefined);
+        const test = createTestAction({ refreshMessages, refreshTopic });
+        // Attach the feed through a live connection, as a real run would.
+        test.action.connectToGateway({
+          gatewayUrl: GATEWAY_URL,
+          operationId: 'own-op',
+          token: 'tok',
+          topicId: 'topic-1',
+        });
+        test.state.gatewayConnections = { 'own-op': { status: 'connected' } };
+        return { ...test, refreshMessages, refreshTopic };
+      };
+
+      const lifecycle = (operationId: string, status: string, meta?: Record<string, string>) => ({
+        at: Date.now(),
+        meta,
+        operationId,
+        status,
+        type: 'op_lifecycle',
+      });
+
+      // A background sub-agent's result wakes its parent with a run the server
+      // starts on its own; refetching the topic lands its running marker, which
+      // the conversation's reconnect hook attaches to.
+      it('refetches the topic when a top-level run starts elsewhere, once per transition', () => {
+        const { mux, refreshTopic } = setup();
+
+        const wake = lifecycle('wake-op', 'running', { agentId: 'agent-1', topicId: 'topic-1' });
+        mux.emit('lifecycle', wake);
+        mux.emit('lifecycle', { ...wake, at: wake.at + 1 });
+
+        expect(refreshTopic).toHaveBeenCalledTimes(1);
+        expect(refreshTopic).toHaveBeenCalledWith(expect.stringContaining('agent-1'));
+      });
+
+      it('ignores runs this tab is already streaming and runs without a topic', () => {
+        const { mux, refreshTopic } = setup();
+
+        mux.emit('lifecycle', lifecycle('own-op', 'running', { agentId: 'a', topicId: 'topic-1' }));
+        mux.emit('lifecycle', lifecycle('bare-op', 'running', { agentId: 'a' }));
+
+        expect(refreshTopic).not.toHaveBeenCalled();
+      });
+
+      it('does not follow a child run starting', () => {
+        const { mux, refreshTopic } = setup();
+
+        mux.emit(
+          'lifecycle',
+          lifecycle('child-op', 'running', {
+            agentId: 'a',
+            parentOperationId: 'gone-parent',
+            topicId: 'topic-1',
+          }),
+        );
+
+        expect(refreshTopic).not.toHaveBeenCalled();
+      });
+
+      it('refetches messages when a child ends after its parent stopped streaming', () => {
+        const { mux, refreshMessages } = setup();
+        const meta = { agentId: 'a', parentOperationId: 'gone-parent', topicId: 'topic-1' };
+
+        mux.emit('lifecycle', lifecycle('bg-child', 'running', meta));
+        mux.emit('lifecycle', lifecycle('bg-child', 'completed', meta));
+
+        expect(refreshMessages).toHaveBeenCalledWith({ agentId: 'a', topicId: 'topic-1' });
+      });
+
+      it('leaves a child to its parent stream when the parent is streaming here', () => {
+        const { mux, refreshMessages } = setup();
+
+        mux.emit(
+          'lifecycle',
+          lifecycle('fg-child', 'completed', {
+            agentId: 'a',
+            parentOperationId: 'own-op',
+            topicId: 'topic-1',
+          }),
+        );
+
+        expect(refreshMessages).not.toHaveBeenCalled();
+      });
     });
 
     it('survives without an auth_expired round trip (token is minted per dial)', () => {

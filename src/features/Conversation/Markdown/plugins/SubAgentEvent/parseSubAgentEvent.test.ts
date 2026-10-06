@@ -22,9 +22,7 @@ Background sub-agents you started earlier have finished.
 </subAgentEvent>`;
 
 const runRemark = (markdown: string) => {
-  const processor = unified()
-    .use(remarkParse)
-    .use(createRemarkXmlBlockPlugin(SUB_AGENT_EVENT_TAG));
+  const processor = unified().use(remarkParse).use(createRemarkXmlBlockPlugin(SUB_AGENT_EVENT_TAG));
   return processor.runSync(processor.parse(markdown)) as any;
 };
 

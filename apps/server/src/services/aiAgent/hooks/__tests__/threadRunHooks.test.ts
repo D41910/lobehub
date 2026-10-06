@@ -28,7 +28,7 @@ describe('createThreadHooks thread-completion', () => {
       new Date().toISOString(),
       'placeholder-1',
       'execVirtualSubAgent',
-      {},
+      { sourceToolCallId: 'call-1', totalTokens: 10 },
       options,
     );
     const completion = hooks.find((hook) => hook.id === 'thread-completion')!;
@@ -49,6 +49,19 @@ describe('createThreadHooks thread-completion', () => {
     expect(threadModel.update).toHaveBeenCalledWith(
       'thread-1',
       expect.objectContaining({ status: expect.anything() }),
+    );
+  });
+
+  // Thread writes replace metadata; dropping the marker would turn the
+  // sub-agent back into a plain thread in the UI once it finishes.
+  it('keeps the spawning tool call on the finished thread', async () => {
+    const { threadModel } = await runCompletion();
+
+    expect(threadModel.update).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({
+        metadata: expect.objectContaining({ sourceToolCallId: 'call-1' }),
+      }),
     );
   });
 });

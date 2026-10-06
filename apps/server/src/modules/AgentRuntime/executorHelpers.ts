@@ -339,6 +339,9 @@ export const buildServerVirtualSubAgentRunner = (
         parentMessageId: placeholder.id,
         parentOperationId: ctx.operationId,
         provider: subAgentModel?.provider,
+        // A named `callAgent` target is an agent conversation of its own, not a
+        // sub-agent of the parent.
+        sourceToolCallId: targetAgentId ? undefined : chatToolPayload.id,
         threadId: subAgentId,
         timeout,
         title: description,

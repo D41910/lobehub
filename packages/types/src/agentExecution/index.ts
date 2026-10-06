@@ -642,6 +642,12 @@ export interface ExecVirtualSubAgentParams {
   /** Provider for {@link model}. */
   provider?: string;
   /**
+   * The `callSubAgent` tool call that spawned this sub-agent, stored on a new
+   * thread's metadata so the UI shows the thread as a sub-agent. A continued
+   * thread keeps the call that first spawned it.
+   */
+  sourceToolCallId?: string;
+  /**
    * Existing isolation thread of an earlier `callSubAgent` run to continue.
    * When set, the instruction becomes a new turn on that thread (the sub-agent
    * keeps its history) instead of a new thread being created.

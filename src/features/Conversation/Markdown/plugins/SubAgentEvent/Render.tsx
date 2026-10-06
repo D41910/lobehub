@@ -15,10 +15,6 @@ import { type MarkdownElementProps } from '../type';
 import { parseSubAgentEvent, type SubAgentEventResult } from './parseSubAgentEvent';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
-  header: css`
-    padding-block: 2px 8px;
-    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
-  `,
   mark: css`
     display: inline-flex;
     flex-shrink: 0;
@@ -53,14 +49,13 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   toggle: css`
     cursor: pointer;
 
-    overflow: hidden;
     display: flex;
-    flex: 1;
-    gap: 6px;
+    gap: 4px;
     align-items: center;
 
-    min-width: 0;
-    padding: 0;
+    margin-block-start: 4px;
+    padding-block: 0;
+    padding-inline: 22px 0;
     border: none;
 
     color: inherit;
@@ -93,24 +88,26 @@ const ResultRow = ({ item }: { item: SubAgentEventResult }) => {
   );
 
   const failed = item.status === 'error';
+  const name = item.description ?? t('subAgentEvent.untitled');
 
   return (
     <div className={styles.row}>
       <Flexbox horizontal align={'center'} gap={8}>
-        <button className={styles.toggle} type={'button'} onClick={() => setOpen(!open)}>
-          <Icon
-            className={open ? `${styles.toggleIcon} ${styles.toggleIconOpen}` : styles.toggleIcon}
-            icon={ChevronRightIcon}
-            size={14}
-          />
+        <span className={styles.mark}>
+          <GroupBotIcon size={16} />
+        </span>
+        <Flexbox horizontal align={'center'} flex={1} gap={6} style={{ minWidth: 0 }}>
           <Icon
             color={failed ? cssVar.colorError : cssVar.colorSuccess}
             icon={failed ? CircleXIcon : CircleCheckIcon}
             size={14}
           />
-          <Text ellipsis>{item.description ?? t('subAgentEvent.untitled')}</Text>
-          {failed && <Text type={'danger'}>{t('subAgentEvent.failed')}</Text>}
-        </button>
+          <Text ellipsis weight={500}>
+            {failed
+              ? t('subAgentEvent.failedTitle', { name })
+              : t('subAgentEvent.completedTitle', { name })}
+          </Text>
+        </Flexbox>
         {thread && (
           <Button
             className={styles.rowAction}
@@ -127,6 +124,16 @@ const ResultRow = ({ item }: { item: SubAgentEventResult }) => {
           </Button>
         )}
       </Flexbox>
+      <button className={styles.toggle} type={'button'} onClick={() => setOpen(!open)}>
+        <Icon
+          className={open ? `${styles.toggleIcon} ${styles.toggleIconOpen}` : styles.toggleIcon}
+          icon={ChevronRightIcon}
+          size={14}
+        />
+        <Text type={'secondary'}>
+          {open ? t('subAgentEvent.hideResult') : t('subAgentEvent.showResult')}
+        </Text>
+      </button>
       {open && (
         <div className={styles.result}>
           <Markdown variant={'chat'}>{item.result}</Markdown>
@@ -138,23 +145,17 @@ const ResultRow = ({ item }: { item: SubAgentEventResult }) => {
 
 /**
  * Card for the message that hands background sub-agent results back to the
- * agent that started them. The agent reads the full block; the user sees which
- * sub-agents finished, can expand each answer, and can open its thread. The
- * block's instruction is addressed to the agent and is not shown.
+ * agent that started them. The agent reads the full block; the user sees, per
+ * finished sub-agent, its name and outcome first, can expand its answer, and
+ * can open its thread. The block's instruction is addressed to the agent and
+ * is not shown.
  */
 const Render = ({ children }: MarkdownElementProps) => {
-  const { t } = useTranslation('chat');
   const text = typeof children === 'string' ? children : String(children ?? '');
   const results = parseSubAgentEvent(text);
 
   return (
     <div className={styles.root}>
-      <Flexbox horizontal align={'center'} className={styles.header} gap={8}>
-        <span className={styles.mark}>
-          <GroupBotIcon size={16} />
-        </span>
-        <Text weight={500}>{t('subAgentEvent.title', { count: results.length })}</Text>
-      </Flexbox>
       {results.map((item) => (
         <ResultRow item={item} key={item.id} />
       ))}

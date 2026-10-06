@@ -488,6 +488,7 @@ export class GatewayActionImpl {
       // A one-shot relay channel (a single LLM call outside any run) is not a
       // run of this user's: nothing in the feed is about it.
       if (isLlmRelayChannelId(lifecycle.operationId)) return;
+      const previousStatus = this.#get().gatewayFeed[lifecycle.operationId]?.status;
       this.#set(
         (state) => ({
           gatewayFeed: {
@@ -502,7 +503,42 @@ export class GatewayActionImpl {
         false,
         'gateway/lifecycle',
       );
+      // The hub repeats a status on every stored change; act on transitions only.
+      if (lifecycle.status !== previousStatus) this.#followUnownedRun(lifecycle);
     });
+  };
+
+  /**
+   * React to a run this tab is not streaming. The hub announces every op the
+   * user owns, and for a run the server started on its own — a background
+   * sub-agent's result waking its parent, a run from another tab — that notice
+   * is the only signal this tab gets.
+   *
+   * - A top-level run starting: refetch its topic so the row carries the run's
+   *   `runningOperation` marker; the conversation's `useGatewayReconnect` then
+   *   attaches to it exactly as on a page load.
+   * - A child run ending while its parent is not streaming here (a background
+   *   sub-agent): refetch the topic's messages so its tool card settles.
+   */
+  #followUnownedRun = (lifecycle: MuxOpLifecycleMessage): void => {
+    const { agentId, groupId, parentOperationId, topicId } = lifecycle.meta ?? {};
+    if (!agentId || !topicId) return;
+
+    const state = this.#get();
+    if (state.gatewayConnections[lifecycle.operationId]) return;
+
+    if (lifecycle.status === 'running' && !parentOperationId) {
+      state.refreshTopic(topicMapKey({ agentId, groupId })).catch(console.error);
+      return;
+    }
+
+    const ended =
+      lifecycle.status === 'completed' ||
+      lifecycle.status === 'error' ||
+      lifecycle.status === 'interrupted';
+    if (ended && parentOperationId && !state.gatewayConnections[parentOperationId]) {
+      state.refreshMessages({ agentId, topicId }).catch(console.error);
+    }
   };
 
   /**
