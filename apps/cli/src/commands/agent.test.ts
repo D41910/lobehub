@@ -60,10 +60,6 @@ const { getTrpcClient: mockGetTrpcClient } = vi.hoisted(() => ({
   getTrpcClient: vi.fn(),
 }));
 
-const { mockStreamAgentEvents } = vi.hoisted(() => ({
-  mockStreamAgentEvents: vi.fn(),
-}));
-
 const { mockReplayAgentEvents, mockStreamAgentEventsViaWebSocket } = vi.hoisted(() => ({
   mockReplayAgentEvents: vi.fn(),
   mockStreamAgentEventsViaWebSocket: vi.fn(),
@@ -86,7 +82,6 @@ vi.mock('../api/client', () => ({ getTrpcClient: mockGetTrpcClient }));
 vi.mock('../api/http', () => ({ getAgentStreamAuthInfo: mockGetAgentStreamAuthInfo }));
 vi.mock('../utils/agentStream', () => ({
   replayAgentEvents: mockReplayAgentEvents,
-  streamAgentEvents: mockStreamAgentEvents,
   streamAgentEventsViaWebSocket: mockStreamAgentEventsViaWebSocket,
 }));
 vi.mock('../utils/device', () => ({ resolveLocalDeviceId: mockResolveLocalDeviceId }));
@@ -713,11 +708,12 @@ describe('agent command', () => {
           verbose: undefined,
         }),
       );
-      expect(mockStreamAgentEvents).not.toHaveBeenCalled();
     });
 
     it('rejects the removed --sse option before starting a run', async () => {
-      await expect(createProgram().parseAsync(['node', 'test', 'agent', 'run', '--sse'])).rejects.toThrow("unknown option '--sse'");
+      await expect(
+        createProgram().parseAsync(['node', 'test', 'agent', 'run', '--sse']),
+      ).rejects.toThrow("unknown option '--sse'");
       expect(mockTrpcClient.aiAgent.execAgent.mutate).not.toHaveBeenCalled();
     });
     it('should support --slug option', async () => {
@@ -1253,7 +1249,7 @@ describe('agent command', () => {
       expect(process.exitCode).toBe(code);
     });
 
-    it('exits 2 for a run parked on human approval over SSE, in --json mode too', async () => {
+    it('exits 2 for a run parked on human approval over WebSocket, in --json mode too', async () => {
       mockStreamAgentEventsViaWebSocket.mockResolvedValue({
         kind: 'waiting_for_human',
         status: 'waiting_for_human',
@@ -1262,8 +1258,10 @@ describe('agent command', () => {
       expect(process.exitCode).toBe(2);
     });
 
-    it('an SSE stream that cannot be opened falls back to polling the run outcome', async () => {
-      mockStreamAgentEventsViaWebSocket.mockRejectedValue(new Error('Agent stream failed: 502 Bad Gateway'));
+    it('a WebSocket stream that cannot be opened falls back to polling the run outcome', async () => {
+      mockStreamAgentEventsViaWebSocket.mockRejectedValue(
+        new Error('Agent stream failed: 502 Bad Gateway'),
+      );
       mockTrpcClient.aiAgent.getOperationStatus.query.mockResolvedValue(envelope('done'));
 
       await run();

@@ -133,11 +133,16 @@ lh agent run [-a <id>] [-s <slug>] [-p <text>] [-t <id>] [--no-auto-start] [--de
 
 ### Streaming Behavior
 
-Uses `utils/agentStream.ts`. Streams over the agent gateway WebSocket, including buffered
-events emitted before connection. JWT and API-key authentication are supported.
-If the live stream drops before the run finishes, human-readable mode falls back to polling
-`agent status` every 10 seconds until the run reaches a terminal state. JSON mode fails
-instead of claiming a complete event stream. There is no automatic WebSocket reconnection.
+Uses `utils/agentStream.ts`. The agent gateway WebSocket delivers real-time notifications;
+the authenticated `aiAgent.getOperationStreamHistory` API supplies the ordered event journal.
+JWT and API-key authentication are supported. Reconnects refresh credentials and retry with
+exponential backoff (up to six consecutive failures, capped at 15 seconds). A heartbeat
+watchdog detects half-open sockets. History reads also check for a lost terminal notification.
+
+The journal is replayed in exclusive-cursor pages on connection and reconnect, so output
+is not duplicated or lost when the gateway buffer is trimmed or hibernated. JSON output
+remains one array. Missing/truncated/expired history is an unknown outcome (exit 3), never
+a successful recovery. Transport recovery does not restart the server-side run.
 
 Self-hosted and local servers need a matching gateway configured with `AGENT_GATEWAY_URL`
 on both the server and CLI, and a matching server-side gateway service token. The gateway
@@ -151,8 +156,10 @@ must trust the server's JWT signing key or support API-key verification against 
 Task `start --follow`, `run --follow`, and `run --topics N` use the same WebSocket
 transport. Each topic waits for completion before the next begins. A failed stream
 stops the sequence without sending a completion heartbeat or starting another topic.
-Gateway replay is limited to its retained event buffer; it is not durable full-history
-recovery after buffer trimming or gateway hibernation.
+Full history recovery is available within the server stream's existing two-hour inactivity
+retention window (each publish renews it). Streams are no longer trimmed at 1,000 events.
+This is temporary Redis retention, not permanent archival storage; it increases Redis
+memory requirements. Existing pre-deploy streams with a trimmed prefix cannot be recovered.
 
 ### Replay Mode
 

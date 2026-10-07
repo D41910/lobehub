@@ -6,9 +6,16 @@ import { getAgentStreamAuthInfo } from '../../api/http';
 import { resolveAgentGatewayUrl } from '../../settings';
 import { AGENT_RUN_EXIT_CODES } from '../../utils/agentRunOutcome';
 import { streamAgentEventsViaWebSocket } from '../../utils/agentStream';
+import { AgentStreamHistoryError } from '../../utils/agentStreamTransport';
 import { resolveLocalDeviceId } from '../../utils/device';
 import { outputJson } from '../../utils/format';
 import { log } from '../../utils/logger';
+
+const handleHistoryFailure = (error: unknown): { kind: 'unknown' } => {
+  if (!(error instanceof AgentStreamHistoryError)) throw error;
+  log.error(error.message);
+  return { kind: 'unknown' };
+};
 
 export function registerLifecycleCommands(task: Command) {
   // ── start ──────────────────────────────────────────────
@@ -80,13 +87,22 @@ export function registerLifecycleCommands(task: Command) {
         if (!gatewayUrl) throw new Error('Agent gateway URL is not configured');
         const outcome = await streamAgentEventsViaWebSocket({
           gatewayUrl,
+          getAuth: getAgentStreamAuthInfo,
           operationId: result.operationId,
+          readHistory: (cursor, signal) =>
+            client.aiAgent.getOperationStreamHistory.query(
+              {
+                operationId: result.operationId,
+                cursor,
+              },
+              { signal },
+            ),
           serverUrl,
           token,
           tokenType,
           json: options.json,
           verbose: options.verbose,
-        });
+        }).catch(handleHistoryFailure);
         // The stream helper reports an `error` event as a failed outcome rather
         // than exiting; keep this command's contract of failing on it.
         if (outcome?.kind !== 'completed') {
@@ -213,22 +229,31 @@ export function registerLifecycleCommands(task: Command) {
 
           // Connect to the gateway WebSocket and wait for completion
           const { serverUrl, token, tokenType } = await getAgentStreamAuthInfo();
-        const gatewayUrl = resolveAgentGatewayUrl();
-        if (!gatewayUrl) throw new Error('Agent gateway URL is not configured');
-        const outcome = await streamAgentEventsViaWebSocket({
-          gatewayUrl,
-          operationId: result.operationId,
-          serverUrl,
-          token,
-          tokenType,
+          const gatewayUrl = resolveAgentGatewayUrl();
+          if (!gatewayUrl) throw new Error('Agent gateway URL is not configured');
+          const outcome = await streamAgentEventsViaWebSocket({
+            gatewayUrl,
+            getAuth: getAgentStreamAuthInfo,
+            operationId: result.operationId,
+            readHistory: (cursor, signal) =>
+              client.aiAgent.getOperationStreamHistory.query(
+                {
+                  operationId: result.operationId,
+                  cursor,
+                },
+                { signal },
+              ),
+            serverUrl,
+            token,
+            tokenType,
             json: options.json,
             verbose: options.verbose,
-          });
+          }).catch(handleHistoryFailure);
           // A failed run stops the sequence, as the stream helper used to exit on it.
           if (outcome?.kind !== 'completed') {
-          process.exitCode = AGENT_RUN_EXIT_CODES[outcome?.kind ?? 'unknown'];
-          return;
-        }
+            process.exitCode = AGENT_RUN_EXIT_CODES[outcome?.kind ?? 'unknown'];
+            return;
+          }
 
           // Update heartbeat after each topic
           try {
