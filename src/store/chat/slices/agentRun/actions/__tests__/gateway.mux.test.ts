@@ -408,7 +408,8 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
       const setup = () => {
         const refreshTopic = vi.fn().mockResolvedValue(undefined);
         const refreshMessages = vi.fn().mockResolvedValue(undefined);
-        const test = createTestAction({ refreshMessages, refreshTopic });
+        const refreshThreads = vi.fn().mockResolvedValue(undefined);
+        const test = createTestAction({ refreshMessages, refreshThreads, refreshTopic });
         // Attach the feed through a live connection, as a real run would.
         test.action.connectToGateway({
           gatewayUrl: GATEWAY_URL,
@@ -417,7 +418,7 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
           topicId: 'topic-1',
         });
         test.state.gatewayConnections = { 'own-op': { status: 'connected' } };
-        return { ...test, refreshMessages, refreshTopic };
+        return { ...test, refreshMessages, refreshThreads, refreshTopic };
       };
 
       const lifecycle = (operationId: string, status: string, meta?: Record<string, string>) => ({
@@ -451,7 +452,24 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
         expect(refreshTopic).not.toHaveBeenCalled();
       });
 
-      it('does not follow a child run starting', () => {
+      // The result card's thread link and the right panel's sub-agent list read
+      // the topic's thread list, which a live wake would otherwise leave stale.
+      it('refetches the topic threads when a background child starts', () => {
+        const { mux, refreshThreads } = setup();
+
+        mux.emit(
+          'lifecycle',
+          lifecycle('bg-child', 'running', {
+            agentId: 'a',
+            parentOperationId: 'gone-parent',
+            topicId: 'topic-1',
+          }),
+        );
+
+        expect(refreshThreads).toHaveBeenCalledWith('topic-1');
+      });
+
+      it('does not refetch the topic for a child run starting', () => {
         const { mux, refreshTopic } = setup();
 
         mux.emit(
@@ -467,17 +485,18 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
       });
 
       it('refetches messages when a child ends after its parent stopped streaming', () => {
-        const { mux, refreshMessages } = setup();
+        const { mux, refreshMessages, refreshThreads } = setup();
         const meta = { agentId: 'a', parentOperationId: 'gone-parent', topicId: 'topic-1' };
 
         mux.emit('lifecycle', lifecycle('bg-child', 'running', meta));
         mux.emit('lifecycle', lifecycle('bg-child', 'completed', meta));
 
         expect(refreshMessages).toHaveBeenCalledWith({ agentId: 'a', topicId: 'topic-1' });
+        expect(refreshThreads).toHaveBeenLastCalledWith('topic-1');
       });
 
       it('leaves a child to its parent stream when the parent is streaming here', () => {
-        const { mux, refreshMessages } = setup();
+        const { mux, refreshMessages, refreshThreads } = setup();
 
         mux.emit(
           'lifecycle',
@@ -489,6 +508,7 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
         );
 
         expect(refreshMessages).not.toHaveBeenCalled();
+        expect(refreshThreads).not.toHaveBeenCalled();
       });
     });
 

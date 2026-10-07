@@ -517,8 +517,10 @@ export class GatewayActionImpl {
    * - A top-level run starting: refetch its topic so the row carries the run's
    *   `runningOperation` marker; the conversation's `useGatewayReconnect` then
    *   attaches to it exactly as on a page load.
-   * - A child run ending while its parent is not streaming here (a background
-   *   sub-agent): refetch the topic's messages so its tool card settles.
+   * - A child run starting or ending while its parent is not streaming here (a
+   *   background sub-agent): refetch the topic's threads so its thread shows up
+   *   as a sub-agent (right panel, the result card's thread link), and on its
+   *   end the messages too so its tool card settles.
    */
   #followUnownedRun = (lifecycle: MuxOpLifecycleMessage): void => {
     const { agentId, groupId, parentOperationId, topicId } = lifecycle.meta ?? {};
@@ -532,13 +534,16 @@ export class GatewayActionImpl {
       return;
     }
 
+    if (!parentOperationId || state.gatewayConnections[parentOperationId]) return;
+
     const ended =
       lifecycle.status === 'completed' ||
       lifecycle.status === 'error' ||
       lifecycle.status === 'interrupted';
-    if (ended && parentOperationId && !state.gatewayConnections[parentOperationId]) {
-      state.refreshMessages({ agentId, topicId }).catch(console.error);
+    if (lifecycle.status === 'running' || ended) {
+      state.refreshThreads(topicId).catch(console.error);
     }
+    if (ended) state.refreshMessages({ agentId, topicId }).catch(console.error);
   };
 
   /**
