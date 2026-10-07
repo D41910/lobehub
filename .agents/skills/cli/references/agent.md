@@ -112,11 +112,10 @@ lh agent duplicate <agentId> [-t <title>]
 
 ## `lh agent run`
 
-Start an agent execution. Streams over the agent gateway WebSocket by default, or via SSE with
-`--sse`.
+Start an agent execution. Streams over the agent gateway WebSocket.
 
 ```bash
-lh agent run [-a <id>] [-s <slug>] [-p <text>] [-t <id>] [--no-auto-start] [--device <target>] [--no-headless] [--json] [-v] [--replay <file>] [--sse]
+lh agent run [-a <id>] [-s <slug>] [-p <text>] [-t <id>] [--no-auto-start] [--device <target>] [--no-headless] [--json] [-v] [--replay <file>]
 ```
 
 | Option                | Description                                                                            |
@@ -131,18 +130,29 @@ lh agent run [-a <id>] [-s <slug>] [-p <text>] [-t <id>] [--no-auto-start] [--de
 | `--json`              | Output full JSON event stream                                                          |
 | `-v, --verbose`       | Show detailed tool call info                                                           |
 | `--replay <file>`     | Replay events from saved JSON file (offline)                                           |
-| `--sse`               | Force SSE stream instead of the WebSocket gateway                                      |
 
 ### Streaming Behavior
 
-Uses `utils/agentStream.ts`. By default, streams over the agent gateway WebSocket; pass `--sse` to
-force the legacy SSE endpoint instead. If the live stream drops before the run finishes, the CLI
-falls back to polling `agent status` every 10 seconds until the run reaches a terminal state.
+Uses `utils/agentStream.ts`. Streams over the agent gateway WebSocket, including buffered
+events emitted before connection. JWT and API-key authentication are supported.
+If the live stream drops before the run finishes, human-readable mode falls back to polling
+`agent status` every 10 seconds until the run reaches a terminal state. JSON mode fails
+instead of claiming a complete event stream. There is no automatic WebSocket reconnection.
+
+Self-hosted and local servers need a matching gateway configured with `AGENT_GATEWAY_URL`
+on both the server and CLI, and a matching server-side gateway service token. The gateway
+must trust the server's JWT signing key or support API-key verification against that server.
 
 1. Sends agent run request to backend, receiving an `operationId`
-2. Connects to the gateway WebSocket (or SSE endpoint with `--sse`) and streams events in real-time
+2. Connects to the gateway WebSocket and streams events in real-time
 3. Displays: text chunks, tool call status, operation progress
 4. Shows final token usage and cost summary
+
+Task `start --follow`, `run --follow`, and `run --topics N` use the same WebSocket
+transport. Each topic waits for completion before the next begins. A failed stream
+stops the sequence without sending a completion heartbeat or starting another topic.
+Gateway replay is limited to its retained event buffer; it is not durable full-history
+recovery after buffer trimming or gateway hibernation.
 
 ### Replay Mode
 

@@ -103,7 +103,7 @@ describe('agent command', () => {
       headers: { 'Oidc-Auth': 'test-token' },
       serverUrl: 'https://example.com',
     });
-    mockStreamAgentEvents.mockResolvedValue(undefined);
+    mockStreamAgentEventsViaWebSocket.mockResolvedValue(undefined);
     mockReplayAgentEvents.mockReset();
     mockStreamAgentEventsViaWebSocket.mockReset();
     mockStreamAgentEventsViaWebSocket.mockResolvedValue(undefined);
@@ -716,36 +716,9 @@ describe('agent command', () => {
       expect(mockStreamAgentEvents).not.toHaveBeenCalled();
     });
 
-    it('should fall back to SSE when --sse is provided', async () => {
-      mockTrpcClient.aiAgent.execAgent.mutate.mockResolvedValue({
-        operationId: 'op-sse',
-        success: true,
-      });
-
-      const program = createProgram();
-      await program.parseAsync([
-        'node',
-        'test',
-        'agent',
-        'run',
-        '--agent-id',
-        'a1',
-        '--prompt',
-        'Hello',
-        '--sse',
-      ]);
-
-      expect(mockStreamAgentEvents).toHaveBeenCalledWith(
-        'https://example.com/api/agent/stream?operationId=op-sse',
-        expect.objectContaining({ 'Oidc-Auth': 'test-token' }),
-        expect.objectContaining({
-          json: undefined,
-          // the SSE stream gets the same quiet-window status probe as WebSocket
-          onStall: expect.any(Function),
-          verbose: undefined,
-        }),
-      );
-      expect(mockStreamAgentEventsViaWebSocket).not.toHaveBeenCalled();
+    it('rejects the removed --sse option before starting a run', async () => {
+      await expect(createProgram().parseAsync(['node', 'test', 'agent', 'run', '--sse'])).rejects.toThrow("unknown option '--sse'");
+      expect(mockTrpcClient.aiAgent.execAgent.mutate).not.toHaveBeenCalled();
     });
     it('should support --slug option', async () => {
       mockTrpcClient.aiAgent.execAgent.mutate.mockResolvedValue({
@@ -1281,19 +1254,19 @@ describe('agent command', () => {
     });
 
     it('exits 2 for a run parked on human approval over SSE, in --json mode too', async () => {
-      mockStreamAgentEvents.mockResolvedValue({
+      mockStreamAgentEventsViaWebSocket.mockResolvedValue({
         kind: 'waiting_for_human',
         status: 'waiting_for_human',
       });
-      await run('--sse', '--json', '--no-headless');
+      await run('--json', '--no-headless');
       expect(process.exitCode).toBe(2);
     });
 
     it('an SSE stream that cannot be opened falls back to polling the run outcome', async () => {
-      mockStreamAgentEvents.mockRejectedValue(new Error('Agent stream failed: 502 Bad Gateway'));
+      mockStreamAgentEventsViaWebSocket.mockRejectedValue(new Error('Agent stream failed: 502 Bad Gateway'));
       mockTrpcClient.aiAgent.getOperationStatus.query.mockResolvedValue(envelope('done'));
 
-      await run('--sse');
+      await run();
 
       expect(mockTrpcClient.aiAgent.getOperationStatus.query).toHaveBeenCalled();
       expect(exitSpy).not.toHaveBeenCalled();
