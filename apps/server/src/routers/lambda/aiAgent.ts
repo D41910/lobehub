@@ -16,6 +16,7 @@ import type {
 import {
   CreateThreadWithMessageSchema,
   entityIdPattern,
+  HETEROGENEOUS_FRESH_SESSION_CONTEXT_MAX_LENGTH,
   initialTopicMetadataSchema,
   isServerDefaultHeterogeneousRelayInvocation,
   LocalExecutionHeterogeneousAgentTypeSchema,
@@ -1263,6 +1264,13 @@ const ExecAgentSchema = z
       .optional(),
     /** Explicit device ID to bind to the topic and activate for this run */
     deviceId: z.string().optional(),
+    /** Selected history replaces native resume and latest-topic recovery for Codex. */
+    heterogeneousFreshSession: z
+      .object({
+        historyBoundaryMessageId: z.string().min(1),
+        systemContext: z.string().max(HETEROGENEOUS_FRESH_SESSION_CONTEXT_MAX_LENGTH).optional(),
+      })
+      .optional(),
     /** Current desktop device hint, honored only for an effective local target */
     localDeviceId: z.string().optional(),
     /** Optional existing message IDs to include in context */
@@ -2608,6 +2616,7 @@ export const aiAgentRouter = router({
           replacesOperationId: input.replacesOperationId,
         },
         clientProtocol: input.clientProtocol,
+        heterogeneousFreshSession: input.heterogeneousFreshSession,
         includeFinalState: input.includeFinalState,
         llmExecutor: input.llmExecutor,
         // This procedure serves the composer (`aiAgentService.execAgentTask`).
