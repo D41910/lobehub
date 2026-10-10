@@ -6,7 +6,11 @@ import { useChatStore } from '@/store/chat';
 import { operationSelectors } from '@/store/chat/selectors';
 import { groupSidebarTopics, selectSidebarTopics } from '@/store/chat/slices/topic/selectors';
 import { useGlobalStore } from '@/store/global';
-import { useProjectDirectoryStore, useProjectTopics } from '@/store/projectWorkingDirectory';
+import {
+  useProjectDirectories,
+  useProjectDirectoryStore,
+  useProjectTopics,
+} from '@/store/projectWorkingDirectory';
 import type { ChatTopic, TopicGroupMode, TopicSortBy } from '@/types/topic';
 
 import { useTopicListScope } from './TopicListScope';
@@ -43,6 +47,7 @@ export const useScopedSidebarTopics = (
   const { topicId } = useActiveRouteParams<{ topicId?: string }>();
   const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
   const running = useChatStore(operationSelectors.visiblyRunningTopicIds);
+  const directories = useProjectDirectories(scope?.projectId);
   const visible = useMemo(() => {
     const list: ChatTopic[] = (topics ?? []).filter(
       (topic) => !topic.trigger || !MAIN_SIDEBAR_EXCLUDE_TRIGGERS.includes(topic.trigger),
@@ -56,8 +61,8 @@ export const useScopedSidebarTopics = (
     );
   }, [topics, topicId, pageSize, sortBy, includeCompleted]);
   const groups = useMemo(
-    () => groupSidebarTopics(visible, groupMode, sortBy, running),
-    [visible, groupMode, sortBy, running],
+    () => groupSidebarTopics(visible, groupMode, sortBy, running, directories),
+    [visible, groupMode, sortBy, running, directories],
   );
   const hasMore =
     (topics ?? []).filter(
