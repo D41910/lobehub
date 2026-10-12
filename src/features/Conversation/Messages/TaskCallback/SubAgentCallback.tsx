@@ -47,6 +47,7 @@ const SubAgentCallbackMessage = ({
 
   return (
     <ChatItem
+      showTitle
       avatar={{ ...meta, title: callback.name || meta.title }}
       id={id}
       placement={'left'}

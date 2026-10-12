@@ -162,7 +162,12 @@ function createFakeMux(): GatewayMuxClient & Emitter {
 const GATEWAY_URL = 'https://gateway.test.com';
 
 function createTestAction(overrides: Record<string, any> = {}) {
-  const state: Record<string, any> = { gatewayConnections: {}, gatewayFeed: {} };
+  const state: Record<string, any> = {
+    gatewayConnections: {},
+    gatewayFeed: {},
+    operations: {},
+    operationsByContext: {},
+  };
   const set = vi.fn((updater: any) => {
     if (typeof updater === 'function') Object.assign(state, updater(state));
     else Object.assign(state, updater);
@@ -495,7 +500,8 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
         expect(refreshThreads).toHaveBeenLastCalledWith('topic-1');
       });
 
-      it('leaves a child to its parent stream when the parent is streaming here', () => {
+      // The parent's stream carries the answer but not the topic's thread list.
+      it('refreshes only the threads for a child whose parent streams here', () => {
         const { mux, refreshMessages, refreshThreads } = setup();
 
         mux.emit(
@@ -508,7 +514,43 @@ describe('GatewayActionImpl (multiplexed gateway transport)', () => {
         );
 
         expect(refreshMessages).not.toHaveBeenCalled();
-        expect(refreshThreads).not.toHaveBeenCalled();
+        expect(refreshThreads).toHaveBeenCalledWith('topic-1');
+      });
+
+      // A run this tab just started is announced before its connection exists;
+      // following it opened a second resuming stream and left the spinner on.
+      it('does not follow a run while this tab has a turn going on the topic', () => {
+        const { mux, refreshTopic, state } = setup();
+        state.operationsByContext = { main_a_topic_1: ['local-send'] };
+        state.operations = {
+          'local-send': {
+            context: { agentId: 'a', scope: 'main', threadId: null, topicId: 'topic_1' },
+            id: 'local-send',
+            metadata: {},
+            status: 'running',
+            type: 'sendMessage',
+          },
+        };
+
+        mux.emit('lifecycle', lifecycle('new-op', 'running', { agentId: 'a', topicId: 'topic_1' }));
+        mux.emit(
+          'lifecycle',
+          lifecycle('new-op', 'completed', { agentId: 'a', topicId: 'topic_1' }),
+        );
+
+        expect(refreshTopic).not.toHaveBeenCalled();
+      });
+
+      // The running notice can beat the topic's running marker, and a short
+      // wake-up can end before anything refetches; its end converges the view.
+      it('refetches messages and the topic when a top-level run ends elsewhere', () => {
+        const { mux, refreshMessages, refreshTopic } = setup();
+        const meta = { agentId: 'a', topicId: 'topic-1' };
+
+        mux.emit('lifecycle', lifecycle('wake-op', 'completed', meta));
+
+        expect(refreshMessages).toHaveBeenCalledWith({ agentId: 'a', topicId: 'topic-1' });
+        expect(refreshTopic).toHaveBeenCalledTimes(1);
       });
     });
 
