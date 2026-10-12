@@ -57,3 +57,16 @@ export const isLinkedWorktreeCheckout = (
  */
 export const shouldShowCiLabel = (status?: DeviceGitPullRequestCiStatus): boolean =>
   status === 'failure' || status === 'pending';
+
+/**
+ * The git section skeleton is a first-ever-load affordance only. Once any git
+ * read has data — live, or hydrated from the persisted SWR cache on reload —
+ * the rows render stale-first and the in-flight reads refresh them in place.
+ */
+export const shouldShowGitSkeleton = ({
+  hasData,
+  loading,
+}: {
+  hasData: boolean;
+  loading: boolean;
+}): boolean => loading && !hasData;

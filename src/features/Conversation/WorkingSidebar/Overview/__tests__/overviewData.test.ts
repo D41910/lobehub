@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { collectChangeStats, isLinkedWorktreeCheckout, shouldShowCiLabel } from '../overviewData';
+import {
+  collectChangeStats,
+  isLinkedWorktreeCheckout,
+  shouldShowCiLabel,
+  shouldShowGitSkeleton,
+} from '../overviewData';
 
 describe('collectChangeStats', () => {
   it('sums additions/deletions across repo and submodule patches', () => {
@@ -66,5 +71,22 @@ describe('shouldShowCiLabel', () => {
     expect(shouldShowCiLabel('success')).toBe(false);
     expect(shouldShowCiLabel('unknown')).toBe(false);
     expect(shouldShowCiLabel(undefined)).toBe(false);
+  });
+});
+
+describe('shouldShowGitSkeleton', () => {
+  it('shows the skeleton only on a first-ever load with no git data at all', () => {
+    expect(shouldShowGitSkeleton({ hasData: false, loading: true })).toBe(true);
+  });
+
+  // Regression: the skeleton keyed off `branchLoading || reviewLoading`, so a
+  // reload with a cached branch still blanked the whole section until the diff
+  // patches came back.
+  it('keeps rendering cached rows while other git reads are still in flight', () => {
+    expect(shouldShowGitSkeleton({ hasData: true, loading: true })).toBe(false);
+  });
+
+  it('never shows the skeleton once loading settles', () => {
+    expect(shouldShowGitSkeleton({ hasData: false, loading: false })).toBe(false);
   });
 });
