@@ -9,6 +9,7 @@ import {
   isDocumentCommentKeyForEvent,
   recentKeys,
   resourceKeys,
+  sandboxKeys,
   taskKeys,
   verifyKeys,
   workKeys,
@@ -206,5 +207,32 @@ describe('taskKeys', () => {
       serialized.includes(pattern),
     );
     expect(persisted).toBe(true);
+  });
+});
+
+describe('sandboxKeys', () => {
+  const persisted = (key: readonly unknown[]) =>
+    [...CACHE_TIERS.idb, ...CACHE_TIERS.local].some((pattern) =>
+      unstable_serialize(key).includes(pattern),
+    );
+
+  // Regression: the composer's instance chip and the working panel's sandbox
+  // directory used `sandbox-*` keys no CACHE_TIERS pattern matched, so every
+  // reload re-fetched them before the chip or the Files tab could render.
+  it('routes the picker lists and the instance directory to a persisted tier', () => {
+    expect(persisted(sandboxKeys.environments())).toBe(true);
+    expect(persisted(sandboxKeys.instances('topic-1'))).toBe(true);
+    expect(persisted(sandboxKeys.instances())).toBe(true);
+    expect(persisted(sandboxKeys.instanceDir('inst-1'))).toBe(true);
+  });
+
+  it('keeps per-topic occupancy in separate cache entries', () => {
+    expect(unstable_serialize(sandboxKeys.instances('topic-1'))).not.toBe(
+      unstable_serialize(sandboxKeys.instances('topic-2')),
+    );
+  });
+
+  it('does not persist sandbox-scoped local file previews', () => {
+    expect(persisted(['localFile:preview', 'sandbox:topic-1', 'a.ts'])).toBe(false);
   });
 });

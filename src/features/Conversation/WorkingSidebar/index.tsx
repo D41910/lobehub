@@ -38,7 +38,6 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import useSWR from 'swr';
 
 import { useBusinessWorkingSidebarTabs } from '@/business/client/features/WorkingSidebarTabs';
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
@@ -50,6 +49,7 @@ import {
 } from '@/features/AgentSidebar/Topic/List/Item/metaCardData';
 import { useRepoType } from '@/features/ChatInput/ControlBar/useRepoType';
 import { useSandboxMode } from '@/features/ChatInput/ControlBar/useSandboxMode';
+import { useSandboxInstanceDirectory } from '@/features/EnvironmentManager/sandboxListCache';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import { getPortalViewWidth } from '@/features/Portal/portalWidth';
 import TopicCommentsSidebar from '@/features/Portal/TopicComments/Sidebar';
@@ -63,7 +63,6 @@ import { useEffectiveAgencyConfig } from '@/hooks/useEffectiveAgencyConfig';
 import { useEffectiveWorkingDirectory } from '@/hooks/useEffectiveWorkingDirectory';
 import { useLocalStorageState } from '@/hooks/useLocalStorageState';
 import type { NativeContextMenuItem } from '@/libs/contextMenu/types';
-import { sandboxStorageService } from '@/services/sandboxStorage';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, chatConfigByIdSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
@@ -393,9 +392,10 @@ const AgentWorkingSidebar = memo<AgentWorkingSidebarProps>(({ availableWidth }) 
   // Scoped to the bound instance's directory, or the workspace root when the
   // run keeps files without one. The empty string IS the root here, which is
   // why the tab's gate is the topic rather than a truthy path.
-  const { data: sandboxInstances } = useSWR(
-    isSandboxExecution && sandboxInstanceId ? ['sandbox-instance-dir', sandboxInstanceId] : null,
-    () => sandboxStorageService.getInstance({ id: sandboxInstanceId! }),
+  // Persisted, so a reload resolves the directory — and with it the Files
+  // tab — on the first paint instead of after a round trip.
+  const { data: sandboxInstances } = useSandboxInstanceDirectory(
+    isSandboxExecution ? sandboxInstanceId : undefined,
   );
   const sandboxDirectory = sandboxInstances?.workingDirectory ?? '';
   // The empty string IS the workspace root, so an unresolved instance does not

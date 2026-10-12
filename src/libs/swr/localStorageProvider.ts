@@ -500,6 +500,11 @@ export const CACHE_TIERS = {
     'agentBuilder:suggestions', // builder opening-suggestion chips (skip LLM regen on revisit)
     'taskTemplate:', // home task-template recommendations
     'modelConfig:', // small remote model config shells used by home starter chips
+    // Cloud sandbox picker chip + working panel directory. Slim projections
+    // only; never `sandbox:` alone, which also appears inside localFile keys.
+    'sandbox:environments',
+    'sandbox:instances',
+    'sandbox:instanceDir',
   ],
 } as const;
 

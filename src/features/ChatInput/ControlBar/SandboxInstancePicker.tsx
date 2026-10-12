@@ -27,11 +27,13 @@ import {
 } from 'lucide-react';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import useSWR from 'swr';
 
 import { openSandboxStorageUpsell } from '@/business/client/features/SandboxStorageUpsell';
 import { describeError } from '@/features/EnvironmentManager/errorMessage';
-import { repositoryPath } from '@/features/EnvironmentManager/repository';
+import {
+  useSandboxPickerEnvironments,
+  useSandboxPickerInstances,
+} from '@/features/EnvironmentManager/sandboxListCache';
 import { settleThenRefresh } from '@/features/EnvironmentManager/settleThenRefresh';
 import { useCanEditEnvironment } from '@/features/EnvironmentManager/useCanEditEnvironment';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
@@ -226,26 +228,14 @@ const SandboxInstancePicker = memo<SandboxInstancePickerProps>(
       data,
       isLoading: instancesLoading,
       mutate: refreshInstances,
-    } = useSWR(
-      entitled && (open || boundInstanceId) ? ['sandbox-instances', topicId] : null,
-      () => sandboxStorageService.listInstances({ topicId, withSizes: false }),
-      // The topic is in the key because occupancy is answered per conversation
-      // — "in use by another one" is a different answer here than there. The
-      // instances themselves are the same list either way, so the first send,
-      // which takes the topic from none to one, must not blank the chip: it
-      // would flash a skeleton for a name that never changed. Kept until the
-      // refetch lands; a moment of last-known occupancy is not worth that.
-      { keepPreviousData: true, revalidateOnFocus: false },
-    );
+    } = useSandboxPickerInstances(entitled && Boolean(open || boundInstanceId), topicId);
+    // Also while closed when an instance is bound: whether that instance is
+    // still usable depends on its environment's visibility.
     const {
       data: environmentData,
       error: environmentError,
       isLoading: environmentsLoading,
-      // Also while closed when an instance is bound: whether that instance
-      // is still usable depends on its environment's visibility.
-    } = useSWR(entitled && (open || boundInstanceId) ? 'sandbox-environments' : null, () =>
-      sandboxStorageService.listEnvironments(),
-    );
+    } = useSandboxPickerEnvironments(entitled && Boolean(open || boundInstanceId));
 
     const instances = data?.instances ?? [];
     const environments = environmentData?.environments ?? [];
@@ -366,7 +356,7 @@ const SandboxInstancePicker = memo<SandboxInstancePickerProps>(
       // picks between and "which repo is this" is what they are asking. The
       // instance's own directory cannot answer it: that is a folder inside the
       // workspace, which a repository icon would misread.
-      const repository = repositoryPath(environment?.configuration);
+      const hasRepository = environment?.hasRepository;
       // Somebody else's run. The execution plane allows one session per
       // instance — the second writer meets a 409 INSTANCE_IN_USE — so
       // offering it would be offering a choice the next message refuses. Its
@@ -396,7 +386,7 @@ const SandboxInstancePicker = memo<SandboxInstancePickerProps>(
           // however the lease reads, because "you cannot pick what you are
           // already using" is never the right thing to tell someone.
           disabled={(occupied || preparing) && instance.id !== boundInstanceId}
-          icon={repository ? <Github size={16} /> : <Icon icon={INSTANCE_ICON} size={16} />}
+          icon={hasRepository ? <Github size={16} /> : <Icon icon={INSTANCE_ICON} size={16} />}
           key={instance.id}
           label={instance.name}
           desc={
@@ -481,7 +471,7 @@ const SandboxInstancePicker = memo<SandboxInstancePickerProps>(
       }
       if (currentBlocked) return <Icon icon={LockIcon} size={14} />;
 
-      return repositoryPath(environmentById.get(current.environmentId)?.configuration) ? (
+      return environmentById.get(current.environmentId)?.hasRepository ? (
         <Github size={14} />
       ) : (
         <Icon icon={INSTANCE_ICON} size={14} />

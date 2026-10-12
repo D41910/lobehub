@@ -436,6 +436,23 @@ export const videoKeys = {
   ]),
 };
 
+// ---- sandbox (cloud sandbox picker + working panel) ---------------------
+// Persisted in the localStorage tier so the composer's instance chip and the
+// panel's Files tab are there on the first paint after a reload. Fetchers
+// behind these keys store slim projections only (see
+// `features/EnvironmentManager/sandboxListCache.ts`): never an environment's
+// configuration or a source URL. Callers go through `useClientDataSWR`, which
+// adds the workspace to the key.
+export const sandboxKeys = {
+  environments: def('sandbox:environments', () => ['sandbox:environments']),
+  instanceDir: def('sandbox:instanceDir', (instanceId: string) => [
+    'sandbox:instanceDir',
+    instanceId,
+  ]),
+  /** Occupancy is answered per conversation, so the topic is part of the key. */
+  instances: def('sandbox:instances', (topicId?: string) => ['sandbox:instances', topicId ?? null]),
+};
+
 // ---- serverConfig -------------------------------------------------------
 export const serverConfigKeys = {
   get: 'serverConfig:get' as const,
@@ -1176,6 +1193,7 @@ export const swrKeys = {
   openInApp: openInAppKeys,
   portal: portalKeys,
   ragEval: ragEvalKeys,
+  sandbox: sandboxKeys,
   recent: recentKeys,
   recommendations: recommendationsKeys,
   resource: resourceKeys,
