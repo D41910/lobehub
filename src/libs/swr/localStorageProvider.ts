@@ -113,6 +113,27 @@ const matchesPattern = (key: string, patterns: string[]): boolean =>
   patterns.some((pattern) => key.includes(pattern));
 
 /**
+ * Reduce an SWR cache state to what is worth restoring after a reload. SWR
+ * stores `{ data, error, isValidating, isLoading, ... }` per key; persisting
+ * the request flags or a failed fetch's `error` would replay a stale spinner or
+ * error page on the next boot before the key ever revalidates. Only settled
+ * `data` survives; a state without it is not persisted at all.
+ */
+const SWR_STATE_FIELDS = ['data', 'error', 'isLoading', 'isValidating'];
+
+const toPersisted = (value: unknown): unknown => {
+  if (!value || typeof value !== 'object') return value;
+  if (!SWR_STATE_FIELDS.some((field) => field in value)) return value;
+  const {
+    error: _error,
+    isLoading: _isLoading,
+    isValidating: _isValidating,
+    ...rest
+  } = value as Record<string, unknown>;
+  return rest.data === undefined ? undefined : rest;
+};
+
+/**
  * Build the scoped localStorage cache key (localStorage tier namespace).
  *
  * Partitioned per identity scope so different users / workspaces sharing the
@@ -184,7 +205,8 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
       return new Map(
         entries
           .filter(([, e]) => now - e.timestamp <= ttl && e.version === version)
-          .map(([key, e]) => [key, e.data] as [string, unknown]),
+          .map(([key, e]) => [key, toPersisted(e.data)] as [string, unknown])
+          .filter(([, data]) => data !== undefined),
       );
     } catch (error) {
       onError(error as Error);
@@ -199,6 +221,8 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     try {
       const entries = Array.from(cacheMapInstance.entries())
         .filter(([k]) => matchesPattern(k, localPatterns))
+        .map(([k, value]) => [k, toPersisted(value)] as const)
+        .filter(([, data]) => data !== undefined)
         .slice(-maxLocalEntries)
         .map(([k, data]) => [k, { data, timestamp: Date.now(), version } as CacheEntry]);
 
@@ -246,8 +270,10 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
 
     for (const k of dels) void localDataCache.delete(buildLocalDataKey(scope, k));
     for (const k of writes) {
-      const v = cacheMapInstance.get(k);
-      if (v !== undefined) void localDataCache.set(buildLocalDataKey(scope, k), v, version);
+      const v = toPersisted(cacheMapInstance.get(k));
+      // A state without settled data must not leave an older row behind.
+      if (v === undefined) void localDataCache.delete(buildLocalDataKey(scope, k));
+      else void localDataCache.set(buildLocalDataKey(scope, k), v, version);
     }
   };
 

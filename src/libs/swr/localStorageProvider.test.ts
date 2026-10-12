@@ -116,6 +116,39 @@ describe('createCacheProvider — tiering', () => {
     expect(await localDataCache.entriesByScope('s1')).toEqual([]);
   });
 
+  // Regression: the provider persisted SWR's whole state, so a failed fetch was
+  // stored as `{ error, isLoading: true, isValidating: true }` and replayed on the
+  // next boot as an error page / stuck spinner before the key ever revalidated.
+  it('persists only settled data, never request flags or a failed fetch', async () => {
+    const scope = { value: 's1' };
+    const { provider } = buildProvider(scope);
+    const map = provider();
+
+    map.set('recents', {
+      _k: ['recents'],
+      data: [1],
+      error: new Error('stale'),
+      isLoading: false,
+      isValidating: true,
+    });
+    map.set('recents:failed', {
+      _k: ['recents:failed'],
+      error: { message: 'Resource not found' },
+      isLoading: true,
+      isValidating: true,
+    });
+    map.set('MSGS:failed', { error: { message: 'boom' }, isLoading: true });
+
+    await until(() => localStorage.getItem(getScopedCacheKey('s1')) !== null);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const stored = JSON.parse(localStorage.getItem(getScopedCacheKey('s1'))!);
+    expect(stored.map(([k, e]: [string, { data: unknown }]) => [k, e.data])).toEqual([
+      ['recents', { _k: ['recents'], data: [1] }],
+    ]);
+    expect(await localDataCache.entriesByScope('s1')).toEqual([]);
+  });
+
   // Regression: the resource access record was memory-only, so every reload of
   // an Agent / Group profile page showed a full-form skeleton until the
   // permission request settled. It now restores synchronously on first paint.
