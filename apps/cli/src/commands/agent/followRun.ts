@@ -1,6 +1,5 @@
-import { createLambdaClient } from '../../api/client';
+import { getTrpcClient } from '../../api/client';
 import { getAgentStreamAuthInfo } from '../../api/http';
-import { resolveWorkspaceId } from '../../api/workspace';
 import { resolveAgentGatewayUrl } from '../../settings';
 import type { AgentRunOutcome } from '../../utils/agentRunOutcome';
 import { streamAgentEventsViaWebSocket } from '../../utils/agentStream';
@@ -34,13 +33,13 @@ export const followAgentRun = async (
       gatewayUrl,
       getAuth: () => getAgentStreamAuthInfo(),
       operationId,
-      // Re-resolve credentials for every page: a stored-login token can expire
-      // during a long run, and a cached tRPC client keeps the original one.
+      // The cached client resolves stored credentials per request, so pages
+      // read after a token refresh still authenticate.
       readHistory: async (cursor, signal) =>
-        createLambdaClient(
-          await getAgentStreamAuthInfo(),
-          resolveWorkspaceId(),
-        ).aiAgent.getOperationStreamHistory.query({ cursor, operationId }, { signal }),
+        (await getTrpcClient()).aiAgent.getOperationStreamHistory.query(
+          { cursor, operationId },
+          { signal },
+        ),
     });
     return outcome ?? { kind: 'unknown' };
   } catch (error) {
