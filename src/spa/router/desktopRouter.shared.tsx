@@ -87,6 +87,7 @@ import { identitiesListLoader } from '@/spa/router/identitiesListLoader';
 import { pageListLoader } from '@/spa/router/pageListLoader';
 import { preferenceListLoader } from '@/spa/router/preferenceListLoader';
 import { NoRouteSkeleton, routeMeta } from '@/spa/router/routeMeta';
+import { scheduledTaskListLoader } from '@/spa/router/scheduledTaskListLoader';
 import { SettingsTabs } from '@/store/global/initialState';
 import { dynamicElement, dynamicLayout, ErrorBoundary, redirectElement } from '@/utils/router';
 
@@ -361,6 +362,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
               'Desktop > Chat > Tasks',
             ),
             handle: { meta: tasksRouteMeta },
+            loader: scheduledTaskListLoader,
             path: 'tasks',
           },
           {
@@ -1083,6 +1085,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
           'Desktop > Project Tasks',
         ),
         handle: { meta: tasksRouteMeta },
+        loader: scheduledTaskListLoader,
         path: 'tasks',
       },
       {
@@ -1168,6 +1171,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
             }),
             handle: { meta: tasksRouteMeta },
             index: true,
+            loader: scheduledTaskListLoader,
           },
         ],
         errorElement: <ErrorBoundary resetPath=".." />,
