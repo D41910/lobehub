@@ -83,6 +83,7 @@ import { agentChatTopicListLoader } from '@/spa/router/agentChatTopicListLoader'
 import { channelDataLoader } from '@/spa/router/channelDataLoader';
 import { contextListLoader } from '@/spa/router/contextListLoader';
 import { identitiesListLoader } from '@/spa/router/identitiesListLoader';
+import { libraryTreeLoader } from '@/spa/router/libraryTreeLoader';
 import { pageListLoader } from '@/spa/router/pageListLoader';
 import { preferenceListLoader } from '@/spa/router/preferenceListLoader';
 import { NoRouteSkeleton, routeMeta } from '@/spa/router/routeMeta';
@@ -743,6 +744,7 @@ export const sharedMainAreaChildren: RouteObject[] = [
           () => import('@/routes/(main)/resource/library/_layout'),
           'Desktop > Resource > Library > Layout',
         ),
+        loader: libraryTreeLoader,
         path: 'library/:id',
       },
     ],
