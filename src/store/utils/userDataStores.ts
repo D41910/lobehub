@@ -14,6 +14,7 @@ import { useKnowledgeBaseStore } from '@/store/library';
 import { useMentionStore } from '@/store/mention';
 import { useNotebookStore } from '@/store/notebook';
 import { pageActions } from '@/store/page';
+import { projectFileActions } from '@/store/projectFile';
 import { useSessionStore } from '@/store/session';
 import { useTaskStore } from '@/store/task';
 import { useToolStore } from '@/store/tool';
@@ -47,7 +48,7 @@ const resetableStores: ResetableStoreApi[] = [
   useVideoStore,
 ];
 
-const resetableActions: ResetableStore[] = [pageActions];
+const resetableActions: ResetableStore[] = [pageActions, projectFileActions];
 
 export interface StoreActions extends ResetableStore {}
 
