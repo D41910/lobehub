@@ -11,13 +11,6 @@ declare module '../types' {
 
 const log = debug('context-engine:processor:TaskCallbackMessageProcessor');
 
-const escapeAttribute = (value: string) =>
-  value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-
 /**
  * Task Callback Message Processor
  *
@@ -27,10 +20,6 @@ const escapeAttribute = (value: string) =>
  * it can't reach the model as-is. We surface it as a `user` turn wrapped in a
  * `<task_result>` tag — so the creator agent reads it as the task reporting back
  * (not as human input) and continues the conversation off it.
- *
- * The same role carries a background sub-agent's answer back to its parent
- * (`metadata.subAgentCallback`); that one is wrapped in `<sub_agent_result>`,
- * whose `id` is what `callSubAgent({ subAgentId })` takes to follow up.
  *
  * An empty-content card (no handoff text) is dropped from the model context; it
  * stays persisted + rendered as a UI-only card.
@@ -50,23 +39,11 @@ export class TaskCallbackMessageProcessor extends BaseProcessor {
       // UI-only card with no handoff text — drop it from the model context.
       if (!content) return [];
 
-      surfaced += 1;
-
-      const subAgent = message.metadata?.subAgentCallback;
-      if (subAgent) {
-        return [
-          {
-            ...message,
-            content: `<sub_agent_result id="${escapeAttribute(subAgent.threadId)}" name="${escapeAttribute(subAgent.name)}" status="${subAgent.status}">\n${content}\n</sub_agent_result>`,
-            role: 'user' as const,
-          },
-        ];
-      }
-
       const callback = message.metadata?.taskCallback;
       const identifier = callback?.identifier ?? 'task';
       const reason = callback?.reason ?? 'done';
 
+      surfaced += 1;
       return [
         {
           ...message,

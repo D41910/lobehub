@@ -4,6 +4,11 @@ import { parseSpeakerTag } from '@/store/chat/utils/parseSpeakerTag';
 
 interface ResolveSenderIdentityOptions {
   /**
+   * An agent speaking in a user turn: a background sub-agent reporting back.
+   * Wins over everything else, since the row is the parent conversation's.
+   */
+  agentSender?: { avatar?: string; title: string } | null;
+  /**
    * Real platform author of a bot-channel message. Wins over `sender`, which
    * for such rows is the bot OWNER's account rather than who actually typed.
    */
@@ -29,6 +34,7 @@ interface ResolveSenderIdentityOptions {
  * misattribute their messages to whoever is looking.
  */
 export const resolveSenderIdentity = ({
+  agentSender,
   botSender,
   currentUserId,
   selfAvatar,
@@ -36,6 +42,10 @@ export const resolveSenderIdentity = ({
   sender,
   unknownLabel,
 }: ResolveSenderIdentityOptions) => {
+  if (agentSender) {
+    return { avatar: agentSender.avatar, isOwn: false, title: agentSender.title || unknownLabel };
+  }
+
   if (botSender) {
     return {
       avatar: botSender.avatar || undefined,

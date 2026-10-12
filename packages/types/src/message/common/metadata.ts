@@ -297,8 +297,8 @@ export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSche
   // External-signal lineage for Monitor-style callback turns ().
   signal: MessageSignalSchema.optional(),
   steer: z.boolean().optional(),
-  // role='taskCallback' message carrying a background sub-agent's answer back
-  // to its parent; rendered as a message from that sub-agent.
+  // User message carrying a background sub-agent's answer back to its parent;
+  // its sender is that sub-agent.
   subAgentCallback: MessageSubAgentCallbackSchema.optional(),
   subAgentId: z.string().optional(),
   // role='taskCallback' card: which task delivered its handoff back to this
@@ -563,10 +563,10 @@ export interface MessageMetadata {
    * Used by callAgent tool (sub_agent) and group orchestration (group modes)
    */
   /**
-   * Present on a `role='taskCallback'` message that delivers a background
-   * sub-agent's answer (`callSubAgent` / `callAgent` with `runInBackground`)
-   * back to its parent conversation. The answer is the message content; this
-   * says who sent it. Without it, a `taskCallback` message is a task handoff.
+   * Present on a user message that delivers a background sub-agent's answer
+   * (`callSubAgent` / `callAgent` with `runInBackground`) back to its parent
+   * conversation: the answer is the content, and this is its sender in place
+   * of the human.
    */
   subAgentCallback?: MessageSubAgentCallback;
   subAgentId?: string;

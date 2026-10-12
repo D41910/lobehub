@@ -28,6 +28,7 @@ import { ScmEventAvatar, ScmEventSenderTitle } from './components/ScmEventSender
 import { UserMessageExtra } from './Extra';
 import { getBotSender, resolveSenderIdentity } from './resolveSenderIdentity';
 import ScheduledRunFooter from './ScheduledRunFooter';
+import { SubAgentSenderTags, useSubAgentSenderIdentity } from './SubAgentSender';
 
 interface UserMessageProps {
   disableEditing?: boolean;
@@ -42,6 +43,10 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
   // A wake-up message from the SCM integration is authored by the pull
   // request, so GitHub takes the sender slot instead of the card's header.
   const scmSource = useMemo(() => getScmEventSource(content), [content]);
+  // A background sub-agent reporting back speaks in a user turn of its own.
+  const subAgentCallback = metadata?.subAgentCallback;
+  const agentSender = useSubAgentSenderIdentity(subAgentCallback);
+  const editingDisabled = disableEditing || !!subAgentCallback;
 
   const { t } = useTranslation('chat');
   const selfAvatar = useUserAvatar();
@@ -55,9 +60,11 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
   // rows — see resolveSenderIdentity.
   // A bot-channel row is authored by someone else even in personal mode, so
   // its sender is always shown.
-  const showSender = Boolean(activeWorkspaceId) || !!botSender || !!scmSource;
+  const showSender =
+    Boolean(activeWorkspaceId) || !!botSender || !!scmSource || !!agentSender;
   const currentUserId = useUserStore(userProfileSelectors.userId);
   const { avatar, title } = resolveSenderIdentity({
+    agentSender,
     botSender,
     currentUserId,
     selfAvatar,
@@ -87,19 +94,19 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
     return <Tag>{t('dm.visibleTo', { target: targetName })}</Tag>;
   }, [targetId, userName, agents, t]);
 
-  const onDoubleClick = useDoubleClickEdit({ disableEditing, error, id, role });
+  const onDoubleClick = useDoubleClickEdit({ disableEditing: editingDisabled, error, id, role });
 
   const setMessageItemActionElementPortialContext = useSetMessageItemActionElementPortialContext();
   const setMessageItemActionTypeContext = useSetMessageItemActionTypeContext();
 
   const onMouseEnter: MouseEventHandler<HTMLDivElement> = useCallback(
     (e) => {
-      if (disableEditing) return;
+      if (editingDisabled) return;
       setMessageItemActionElementPortialContext(e.currentTarget);
       setMessageItemActionTypeContext({ id, index, type: 'user' });
     },
     [
-      disableEditing,
+      editingDisabled,
       id,
       index,
       setMessageItemActionElementPortialContext,
@@ -109,7 +116,7 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
 
   return (
     <ChatItem
-      actions={<Actions data={item} disableEditing={disableEditing} id={id} />}
+      actions={<Actions data={item} disableEditing={editingDisabled} id={id} />}
       avatar={{ avatar, title }}
       belowMessage={<ScheduledRunFooter id={id} />}
       customAvatarRender={scmSource ? () => <ScmEventAvatar /> : undefined}
@@ -121,7 +128,6 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
       showAvatar={showSender}
       showTitle={showSender && !scmSource}
       time={createdAt}
-      titleAddon={dmIndicator}
       actionAddon={
         commentCount > 0 && commentTopicId ? (
           <MessageCommentBadge count={commentCount} messageId={id} topicId={commentTopicId} />
@@ -134,6 +140,9 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
             {metadata?.steer && <Tag>{t('steer.tag')}</Tag>}
           </>
         ) : undefined
+      }
+      titleAddon={
+        subAgentCallback ? <SubAgentSenderTags callback={subAgentCallback} /> : dmIndicator
       }
       onDoubleClick={onDoubleClick}
       onMouseEnter={onMouseEnter}

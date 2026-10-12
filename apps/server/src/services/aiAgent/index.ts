@@ -1759,8 +1759,8 @@ export class AiAgentService {
     );
 
   /**
-   * Land background sub-agent answers on the topic's main line as
-   * `role='taskCallback'` messages from each sub-agent. Serialized per topic
+   * Land background sub-agent answers on the topic's main line as user
+   * messages whose sender is each sub-agent. Serialized per topic
    * (with task callbacks too) so concurrent deliveries cannot anchor on the
    * same leaf and fork the line; ids derive from the call, so a retried
    * delivery skips what it already wrote. Returns the line's new leaf.
@@ -1794,7 +1794,7 @@ export class AiAgentService {
               },
             },
             parentId: leafId,
-            role: 'taskCallback',
+            role: 'user',
             topicId,
           },
           messageId,

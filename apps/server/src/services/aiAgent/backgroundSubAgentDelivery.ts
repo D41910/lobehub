@@ -16,10 +16,10 @@ const log = debug('lobe-server:ai-agent:background-sub-agent');
  * answer on its placeholder (see `AgentRuntimeService.completeSubAgentBridge`);
  * this module hands those answers back to the conversation.
  *
- * Each answer lands on the conversation's main line as a `role='taskCallback'`
- * message from the sub-agent (`metadata.subAgentCallback`), the same shape a
- * finished task reports back with, and the parent agent then runs off that
- * history without a made-up user turn.
+ * Each answer lands on the conversation's main line as a user message whose
+ * sender is the sub-agent (`metadata.subAgentCallback`) — the chat shows the
+ * sub-agent speaking, the model reads it wrapped as `<sub_agent_result>` — and
+ * the parent agent then runs off that history.
  *
  * It runs when a background sub-agent finishes and whenever a run of the topic
  * settles, so an answer that arrives mid-turn is delivered once that turn ends
