@@ -17,6 +17,7 @@ const chatState = vi.hoisted(() => ({
 }));
 const builtinAgentIdMap = vi.hoisted(() => ({ inbox: 'agt_inbox' }) as Record<string, string>);
 const preHydrateBuiltinAgentMock = vi.hoisted(() => vi.fn(async () => true));
+const preHydrateVerifyRunsMock = vi.hoisted(() => vi.fn(async (_ids: string[]) => {}));
 
 vi.mock('@lobechat/builtin-agents', () => ({
   BUILTIN_AGENT_SLUGS: { inbox: 'inbox' },
@@ -43,6 +44,10 @@ vi.mock('@/store/chat', () => ({
   useChatStore: {
     getState: () => ({ ...chatState, preHydrateTopicList: preHydrateTopicListMock }),
   },
+}));
+
+vi.mock('@/store/verify', () => ({
+  useVerifyStore: { getState: () => ({ preHydrateVerifyRuns: preHydrateVerifyRunsMock }) },
 }));
 
 vi.mock('@/services/message/replica', () => ({
@@ -130,6 +135,7 @@ describe('agent chat transcript pre-hydrate', () => {
   beforeEach(() => {
     chatState.dbMessagesMap = {};
     chatState.replaceMessages.mockClear();
+    preHydrateVerifyRunsMock.mockReset();
     readPersistedTranscriptMock.mockReset();
     readPersistedTranscriptMock.mockResolvedValue({ items: rows });
   });
@@ -144,6 +150,35 @@ describe('agent chat transcript pre-hydrate', () => {
       context,
       source: 'fetch',
     });
+  });
+
+  it('seeds the verify cards of the transcript before its messages land', async () => {
+    const order: string[] = [];
+    preHydrateVerifyRunsMock.mockImplementation(async () => {
+      order.push('verify');
+    });
+    chatState.replaceMessages.mockImplementation(() => order.push('messages'));
+    readPersistedTranscriptMock.mockResolvedValue({
+      items: [
+        ...rows,
+        { id: 'msg_2', metadata: { verifyOperationId: 'op_1' }, role: 'verify' },
+        { id: 'msg_3', metadata: {}, role: 'verify' },
+      ],
+    });
+
+    await preHydrateMessagesForRoute('agt_1', 'tpc_1');
+
+    expect(preHydrateVerifyRunsMock).toHaveBeenCalledWith(['op_1']);
+    expect(order).toEqual(['verify', 'messages']);
+    chatState.replaceMessages.mockReset();
+  });
+
+  it('still seeds the transcript when the verify cards cannot be read', async () => {
+    preHydrateVerifyRunsMock.mockRejectedValue(new Error('storage exploded'));
+
+    await preHydrateMessagesForRoute('agt_1', 'tpc_1');
+
+    expect(chatState.replaceMessages).toHaveBeenCalled();
   });
 
   it('never replaces rows the chat store already holds', async () => {

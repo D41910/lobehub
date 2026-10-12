@@ -8,6 +8,7 @@ import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
+import { useVerifyStore } from '@/store/verify';
 
 const builtinAgentSlugs = new Set<string>(Object.values(BUILTIN_AGENT_SLUGS));
 
@@ -63,6 +64,18 @@ export const preHydrateMessagesForRoute = async (
   const seed = async () => {
     const transcript = await readPersistedTranscript(context);
     if (!transcript?.items.length) return;
+
+    // Verify cards render from their own replica: seed them first so a
+    // settled card lands with the messages, not a few frames after them.
+    const verifyOperationIds = transcript.items.flatMap((message) =>
+      message.role === 'verify' && message.metadata?.verifyOperationId
+        ? [message.metadata.verifyOperationId]
+        : [],
+    );
+    await useVerifyStore
+      .getState()
+      .preHydrateVerifyRuns(verifyOperationIds)
+      .catch(() => {});
 
     const chat = useChatStore.getState();
     // Rows already in memory (this session's, or streamed) are newer.
