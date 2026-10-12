@@ -30,19 +30,24 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
       accessError,
       canEditResource,
       canManageResource,
+      isAccessConfirmed,
       isAccessResolved,
-      isLoading,
       retryAccess,
     } = useResourceAccess(resourceType, resourceId);
 
-    const accessReady = !!resourceId && isAccessResolved && !isLoading;
+    // Stale-first: a cached grant renders the config page immediately while the
+    // access record revalidates (the server still checks every write). A
+    // denial only redirects once this session has re-confirmed it, so an
+    // outdated cached denial cannot bounce a user who was just granted access.
+    const accessReady = !!resourceId && isAccessResolved;
     const canConfigure =
       accessReady &&
       canEditContent &&
       (requiredAccess === 'manage' ? canManageResource : canEditResource);
+    const denialConfirmed = accessReady && isAccessConfirmed && !canConfigure;
 
     useEffect(() => {
-      if (!accessReady || accessError || canConfigure || hasRedirected.current) return;
+      if (!denialConfirmed || accessError || hasRedirected.current) return;
 
       hasRedirected.current = true;
       // Name the actual reason: a workspace role that cannot configure Agents at
@@ -66,11 +71,10 @@ const ResourceConfigAccessGate = memo<ResourceConfigAccessGateProps>(
       navigate(redirectPath, { replace: true });
     }, [
       accessError,
-      accessReady,
-      canConfigure,
       canEditContent,
       canEditResource,
       canManageResource,
+      denialConfirmed,
       navigate,
       redirectPath,
       requiredAccess,

@@ -8,6 +8,7 @@ import { useResourceAccess } from './useResourceAccess';
 const testState = vi.hoisted(() => ({
   data: undefined as ResourceGeneralAccess | undefined,
   hasActiveWorkspace: true,
+  isValidating: false,
 }));
 
 vi.mock('@/business/client/hooks/useHasActiveWorkspace', () => ({
@@ -19,6 +20,7 @@ vi.mock('@/libs/swr', () => ({
     data: testState.data,
     error: undefined,
     isLoading: false,
+    isValidating: testState.isValidating,
     mutate: vi.fn(),
   }),
 }));
@@ -27,6 +29,31 @@ describe('useResourceAccess', () => {
   beforeEach(() => {
     testState.data = undefined;
     testState.hasActiveWorkspace = true;
+    testState.isValidating = false;
+  });
+
+  it('resolves from cached access while it revalidates, but does not confirm it yet', () => {
+    testState.data = {
+      accessLevel: 'edit',
+      canManage: false,
+      creatorId: 'creator',
+      generalAccess: 'editor',
+      visibility: 'public',
+    };
+    testState.isValidating = true;
+
+    const { result, rerender } = renderHook(() => useResourceAccess('agent', 'agent-1'));
+
+    expect(result.current).toMatchObject({
+      canEditResource: true,
+      isAccessConfirmed: false,
+      isAccessResolved: true,
+    });
+
+    testState.isValidating = false;
+    rerender();
+
+    expect(result.current.isAccessConfirmed).toBe(true);
   });
 
   it('does not apply view-only Member Permissions to an Agent author or admin', () => {

@@ -3,10 +3,9 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useClientDataSWR } from '@/libs/swr';
+import { resourcePermissionKeys } from '@/libs/swr/keys';
 import type { PermissionResourceType, ResourceAccessLevel } from '@/services/resourcePermission';
 import { resourcePermissionService } from '@/services/resourcePermission';
-
-const FETCH_RESOURCE_PERMISSION_KEY = 'resource-permission';
 
 /**
  * State + handlers of the Permission panel: publicity and the workspace
@@ -21,7 +20,7 @@ export const useResourcePermission = (
   const [updating, setUpdating] = useState(false);
 
   const { data, error, isLoading, mutate } = useClientDataSWR(
-    resourceId ? [FETCH_RESOURCE_PERMISSION_KEY, resourceType, resourceId] : null,
+    resourceId ? resourcePermissionKeys.generalAccess(resourceType, resourceId) : null,
     () => resourcePermissionService.getGeneralAccess(resourceType, resourceId!),
   );
 

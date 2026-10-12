@@ -1,11 +1,12 @@
 /**
  * @vitest-environment happy-dom
  */
+import { unstable_serialize } from 'swr';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bootTiming } from '@/libs/bootTiming';
 
-import { taskKeys, taskTemplateKeys } from './keys';
+import { resourcePermissionKeys, taskKeys, taskTemplateKeys } from './keys';
 import { buildLocalDataKey, localDataCache } from './localDataCache';
 import {
   CACHE_TIERS,
@@ -113,6 +114,26 @@ describe('createCacheProvider — tiering', () => {
     const stored = JSON.parse(localStorage.getItem(getScopedCacheKey('s1'))!);
     expect(stored.map(([k]: [string]) => k)).toContain(key);
     expect(await localDataCache.entriesByScope('s1')).toEqual([]);
+  });
+
+  // Regression: the resource access record was memory-only, so every reload of
+  // an Agent / Group profile page showed a full-form skeleton until the
+  // permission request settled. It now restores synchronously on first paint.
+  it('restores resource access synchronously after a reload, isolated per scope', async () => {
+    const options = { idbPatterns: [...CACHE_TIERS.idb], localPatterns: [...CACHE_TIERS.local] };
+    const { provider } = buildProvider({ value: 's1' }, options);
+    const key = unstable_serialize(resourcePermissionKeys.generalAccess('agent', 'agt_1'));
+    const data = { data: { accessLevel: 'edit', canManage: true } };
+    provider().set(key, data);
+
+    await until(() => localStorage.getItem(getScopedCacheKey('s1')) !== null);
+
+    const { provider: reloaded } = buildProvider({ value: 's1' }, options);
+    expect(reloaded().get(key)).toEqual(data);
+    expect(await localDataCache.entriesByScope('s1')).toEqual([]);
+
+    const { provider: otherUser } = buildProvider({ value: 's2' }, options);
+    expect(otherUser().get(key)).toBeUndefined();
   });
 
   it('persists model config keys in the local tier', async () => {

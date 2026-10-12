@@ -500,6 +500,7 @@ export const CACHE_TIERS = {
     'agentBuilder:suggestions', // builder opening-suggestion chips (skip LLM regen on revisit)
     'taskTemplate:', // home task-template recommendations
     'modelConfig:', // small remote model config shells used by home starter chips
+    'resourcePermission:', // last confirmed access level for agent/group config gates
   ],
 } as const;
 

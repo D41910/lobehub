@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ResourceConfigAccessGate from './ResourceConfigAccessGate';
 
 const mocks = vi.hoisted(() => ({
+  accessConfirmed: true,
   accessResolved: true,
   canEditContent: true,
   canEditResource: false,
@@ -40,6 +41,7 @@ vi.mock('./useResourceAccess', () => ({
     accessError: undefined,
     canEditResource: mocks.canEditResource,
     canManageResource: mocks.canManageResource,
+    isAccessConfirmed: mocks.accessConfirmed,
     isAccessResolved: mocks.accessResolved,
     isLoading: false,
     retryAccess: vi.fn(),
@@ -69,6 +71,7 @@ describe('ResourceConfigAccessGate', () => {
     mocks.canEditContent = true;
     mocks.canEditResource = false;
     mocks.canManageResource = false;
+    mocks.accessConfirmed = true;
     mocks.accessResolved = true;
   });
 
@@ -129,5 +132,41 @@ describe('ResourceConfigAccessGate', () => {
     const { getByText } = renderGate('agent', <div>Profile loading</div>);
 
     expect(getByText('Profile loading')).toBeInTheDocument();
+  });
+
+  // Stale-first: a persisted grant renders the config page on first paint
+  // while the access record revalidates, instead of a full-form skeleton.
+  it('renders the config page from a cached grant while access revalidates', () => {
+    mocks.accessConfirmed = false;
+    mocks.canEditResource = true;
+
+    const { getByText } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Agent config')).toBeInTheDocument();
+  });
+
+  it('waits for revalidation before acting on a cached denial', async () => {
+    mocks.accessConfirmed = false;
+
+    const { getByText, rerender } = renderGate('agent', <div>Profile loading</div>);
+
+    expect(getByText('Profile loading')).toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+
+    mocks.accessConfirmed = true;
+    rerender(
+      <ResourceConfigAccessGate
+        loading={<div>Profile loading</div>}
+        redirectPath="/agent/agent-1"
+        resourceId="agent-1"
+        resourceType="agent"
+      >
+        <div>Agent config</div>
+      </ResourceConfigAccessGate>,
+    );
+
+    await waitFor(() => {
+      expect(mocks.navigate).toHaveBeenCalledWith('/agent/agent-1', { replace: true });
+    });
   });
 });

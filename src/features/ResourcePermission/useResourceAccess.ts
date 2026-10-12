@@ -1,10 +1,8 @@
 import { useHasActiveWorkspace } from '@/business/client/hooks/useHasActiveWorkspace';
 import { useClientDataSWR } from '@/libs/swr';
+import { resourcePermissionKeys } from '@/libs/swr/keys';
 import type { PermissionResourceType } from '@/services/resourcePermission';
 import { resourcePermissionService } from '@/services/resourcePermission';
-
-// Same SWR key as useResourcePermission so both hooks share one fetch/cache entry.
-const FETCH_RESOURCE_PERMISSION_KEY = 'resource-permission';
 
 /**
  * Read-side derivation of the workspace General-access level for a resource.
@@ -14,6 +12,11 @@ const FETCH_RESOURCE_PERMISSION_KEY = 'resource-permission';
  * bypasses the public resource's Member Permissions. Management checks are
  * deliberately fail-closed: destructive/ownership controls must not appear
  * until that access is confirmed. Personal mode keeps full access.
+ *
+ * The access record is persisted (local cache tier), so after a reload every
+ * check resolves from the last server-confirmed value while it revalidates.
+ * `isAccessConfirmed` is only true once the current session has re-fetched it —
+ * use it before acting on a denial (redirects), never to delay rendering.
  */
 export const useResourceAccess = (
   resourceType: PermissionResourceType,
@@ -22,8 +25,8 @@ export const useResourceAccess = (
   const hasActiveWorkspace = useHasActiveWorkspace();
   const enabled = hasActiveWorkspace && !!resourceId;
 
-  const { data, error, isLoading, mutate } = useClientDataSWR(
-    enabled ? [FETCH_RESOURCE_PERMISSION_KEY, resourceType, resourceId] : null,
+  const { data, error, isLoading, isValidating, mutate } = useClientDataSWR(
+    enabled ? resourcePermissionKeys.generalAccess(resourceType, resourceId!) : null,
     () => resourcePermissionService.getGeneralAccess(resourceType, resourceId!),
   );
 
@@ -32,6 +35,7 @@ export const useResourceAccess = (
     canEditResource: !enabled || !data ? true : data.canManage || data.accessLevel === 'edit',
     canManageResource: !enabled || data?.canManage === true,
     canUseResource: !enabled || !data ? true : data.canManage || data.accessLevel !== 'view',
+    isAccessConfirmed: !enabled || (!!data && !isValidating && !error),
     isAccessResolved: !enabled || !!data,
     isLoading,
     retryAccess: mutate,

@@ -9,6 +9,7 @@ import {
   isDocumentCommentKeyForEvent,
   recentKeys,
   resourceKeys,
+  resourcePermissionKeys,
   taskKeys,
   verifyKeys,
   workKeys,
@@ -206,5 +207,17 @@ describe('taskKeys', () => {
       serialized.includes(pattern),
     );
     expect(persisted).toBe(true);
+  });
+});
+
+describe('resourcePermissionKeys', () => {
+  // Regression: the access record used a bare `resource-permission` key that no
+  // CACHE_TIERS pattern matched, so agent/group config gates always started
+  // from a skeleton after a reload.
+  it('routes the general-access key to the synchronous local tier', () => {
+    const serialized = unstable_serialize(resourcePermissionKeys.generalAccess('agent', 'agt_1'));
+
+    expect(CACHE_TIERS.local.some((pattern) => serialized.includes(pattern))).toBe(true);
+    expect(CACHE_TIERS.idb.some((pattern) => serialized.includes(pattern))).toBe(false);
   });
 });
