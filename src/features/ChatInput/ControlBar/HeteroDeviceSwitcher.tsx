@@ -679,10 +679,13 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
 
   const renderDeviceRow = (d: NonNullable<typeof devices>[number]) => {
     const isCurrentMachine = d.deviceId === currentDeviceId;
+    // A row restored from the persisted list has not been confirmed yet: its
+    // presence is unknown, so it is neither labelled offline nor disabled.
+    const presenceUnknown = !!d.onlineUnknown;
     return (
       <OptionRow
         active={isActive('device', d.deviceId)}
-        disabled={!d.online}
+        disabled={!d.online && !presenceUnknown}
         icon={<ExecutionTargetIcon devicePlatform={d.platform} target={'device'} />}
         key={d.deviceId}
         label={d.friendlyName || d.hostname || d.deviceId}
@@ -690,8 +693,10 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
           <>
             {isCurrentMachine
               ? t('heteroAgent.executionTarget.gatewayDesc')
-              : renderDeviceStatus(d)}
-            {d.online ? null : (
+              : presenceUnknown
+                ? null
+                : renderDeviceStatus(d)}
+            {d.online || presenceUnknown ? null : (
               <Button
                 className={styles.reconnectButton}
                 icon={<Icon icon={RefreshCwIcon} size={10} />}
