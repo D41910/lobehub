@@ -44,6 +44,7 @@ import { localFileService } from '@/services/electron/localFileService';
 import { useAgentStore } from '@/store/agent';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/selectors';
+import { deviceSelectors, useDeviceStore } from '@/store/device';
 import { useElectronStore } from '@/store/electron';
 
 import { formatLockedControlTooltip } from '../utils/lockedControlTooltip';
@@ -295,6 +296,10 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
   // dimension, so the picker kept showing the previous workspace's pool after
   // a switch.
   const { data: devices, isLoading, mutate: refreshDevices } = useDeviceList();
+  // Until `useDeviceList` answers, name the bound device from the device store,
+  // which is seeded from the persisted device list before paint — otherwise the
+  // chip reads "Unknown device" on every reload.
+  const storedBoundDevice = useDeviceStore(deviceSelectors.getDeviceById(boundDeviceId));
 
   // The current machine's own gateway deviceId (desktop only), used to badge the
   // matching device row with a "This device" tag and show the local-process
@@ -566,7 +571,8 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
 
   const boundDevice =
     canShowExecutionTargetSelector && executionTarget === 'device'
-      ? devices?.find((d) => d.deviceId === boundDeviceId)
+      ? (devices?.find((d) => d.deviceId === boundDeviceId) ??
+        (devices ? undefined : storedBoundDevice))
       : undefined;
 
   // The picker splits by whether the caller is inside a workspace agent:
@@ -679,13 +685,10 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
 
   const renderDeviceRow = (d: NonNullable<typeof devices>[number]) => {
     const isCurrentMachine = d.deviceId === currentDeviceId;
-    // A row restored from the persisted list has not been confirmed yet: its
-    // presence is unknown, so it is neither labelled offline nor disabled.
-    const presenceUnknown = !!d.onlineUnknown;
     return (
       <OptionRow
         active={isActive('device', d.deviceId)}
-        disabled={!d.online && !presenceUnknown}
+        disabled={!d.online}
         icon={<ExecutionTargetIcon devicePlatform={d.platform} target={'device'} />}
         key={d.deviceId}
         label={d.friendlyName || d.hostname || d.deviceId}
@@ -693,10 +696,8 @@ const HeteroDeviceSwitcher = memo<HeteroDeviceSwitcherProps>(({ agentId }) => {
           <>
             {isCurrentMachine
               ? t('heteroAgent.executionTarget.gatewayDesc')
-              : presenceUnknown
-                ? null
-                : renderDeviceStatus(d)}
-            {d.online || presenceUnknown ? null : (
+              : renderDeviceStatus(d)}
+            {d.online ? null : (
               <Button
                 className={styles.reconnectButton}
                 icon={<Icon icon={RefreshCwIcon} size={10} />}
