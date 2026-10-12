@@ -144,9 +144,9 @@ const Overview = memo<OverviewProps>(
     const changeStats = useMemo(() => collectChangeStats(reviewData), [reviewData]);
 
     const gitError = branchError || aheadBehindError || reviewError;
-    // Stale-first: the small git reads are persisted (see CACHE_TIERS), so after a
-    // reload some of them paint instantly while the rest (e.g. the diff patches)
-    // are still in flight. Only fall back to the skeleton when nothing at all is
+    // Stale-first: the small git reads are replicas (`@/store/device/gitStatus`),
+    // so after a reload they paint from the persisted copy while the rest (e.g.
+    // the diff patches) are still in flight. Only fall back to the skeleton when nothing at all is
     // there yet; rows whose own read is pending render a placeholder instead.
     const isGitLoading = shouldShowGitSkeleton({
       hasData:
