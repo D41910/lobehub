@@ -1260,6 +1260,13 @@
       "when": 1791738372458,
       "tag": "0179_distinct_intervention_callbacks",
       "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1791829263541,
+      "tag": "0180_agent_inbox_messages",
+      "breakpoints": true
     }
   ],
   "version": "6"
