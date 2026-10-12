@@ -36,7 +36,7 @@ import {
   invalidateGitReviewCaches,
   type ReviewMode,
   useGitRemoteBranches,
-  useStaleFirstReviewPatches,
+  useReviewPatches,
 } from './useReviewPatches';
 
 interface RepoGroup {
@@ -242,15 +242,16 @@ const Review = memo<ReviewProps>(
       });
     };
 
-    // Stale-first: until the live diff lands, list the files from the last
-    // persisted summary (paths + counts); expanded rows wait for the diff text.
-    const { data, diffPending, isLoading, isValidating } = useStaleFirstReviewPatches(
+    // Stale-first: after a reload the replica paints the last persisted summary
+    // (paths + counts, no diff text); expanded rows wait for the live diff.
+    const { data, isLoading, isValidating } = useReviewPatches(
       workingDirectory,
       mode,
       baseOverride,
       deviceId,
       active,
     );
+    const diffPending = !!data?.summaryOnly;
     const invalidateReviewData = useCallback(
       async () =>
         invalidateGitReviewCaches({
@@ -585,7 +586,7 @@ const Review = memo<ReviewProps>(
             <DropdownMenu items={moreMenuItems} placement={'bottomRight'}>
               <ActionIcon
                 icon={MoreHorizontalIcon}
-                loading={isValidating || (diffPending && isLoading)}
+                loading={isValidating}
                 size={'small'}
                 title={t('workingPanel.review.more')}
               />

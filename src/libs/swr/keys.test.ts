@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentBuilderKeys,
-  deviceKeys,
   documentCommentKeys,
   isAcceptanceListKey,
   isDocumentCommentKeyForEvent,
@@ -207,42 +206,5 @@ describe('taskKeys', () => {
       serialized.includes(pattern),
     );
     expect(persisted).toBe(true);
-  });
-});
-
-describe('deviceKeys Review / PR tab', () => {
-  const tierOf = (key: readonly unknown[]) => {
-    const serialized = unstable_serialize(key);
-    if (CACHE_TIERS.idb.some((pattern) => serialized.includes(pattern))) return 'idb';
-    if (CACHE_TIERS.local.some((pattern) => serialized.includes(pattern))) return 'local';
-    return null;
-  };
-
-  // Regression: every `device:*` key was memory-only, so after a reload the
-  // Review tab spun over the whole panel and the PR tab appeared only once
-  // `gh pr list` / `gh pr view` answered again.
-  it('persists the review summary and PR reads, scoped by device and path', () => {
-    for (const key of [
-      deviceKeys.gitReviewSummary('local', '/repo', 'unstaged', ''),
-      deviceKeys.gitReviewSummary('device-1', '/repo', 'branch', 'origin/canary'),
-      deviceKeys.gitLinkedPR('local', '/repo', 'main'),
-      deviceKeys.gitPullRequestDetail('device-1', '/repo', 42),
-      deviceKeys.gitPullRequestActivity('device-1', '/repo', 42),
-      deviceKeys.gitPullRequestMergeContext('device-1', '/repo', 42, 'abc', 'canary'),
-      // Workspace-augmented shape (`augmentKey` appends the workspace id).
-      [...deviceKeys.gitPullRequestDetail('device-1', '/repo', 42), 'workspace-1'],
-    ]) {
-      expect(tierOf(key)).toBe('idb');
-    }
-  });
-
-  it('keeps the full diff text and the other device reads memory-only', () => {
-    for (const key of [
-      deviceKeys.gitReviewPatches('local', '/repo', 'unstaged', ''),
-      deviceKeys.gitRemoteBranches('local', '/repo'),
-      deviceKeys.listDevices(),
-    ]) {
-      expect(tierOf(key)).toBeNull();
-    }
   });
 });

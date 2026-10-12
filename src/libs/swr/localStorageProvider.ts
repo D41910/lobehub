@@ -45,12 +45,6 @@ export interface CacheProviderOptions {
   debounceMs?: number;
   /** Resolver for the active identity scope (`${userId}:${workspaceId}`). */
   getScope?: () => string;
-  /**
-   * Per-pattern byte ceilings for the IndexedDB tier. A matching entry whose
-   * JSON exceeds its ceiling is not persisted (and any older row is deleted),
-   * so an outsized payload stays memory-only instead of bloating every boot.
-   */
-  idbMaxEntryBytes?: Record<string, number>;
   /** SWR key patterns persisted to the IndexedDB tier. */
   idbPatterns?: string[];
   /**
@@ -133,7 +127,6 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
   const {
     debounceMs = 2000,
     getScope = () => 'default',
-    idbMaxEntryBytes = {},
     idbPatterns = [],
     isEphemeralScope,
     localPatterns = [],
@@ -164,19 +157,6 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     if (matchesPattern(key, idbPatterns)) return 'idb';
     if (matchesPattern(key, localPatterns)) return 'local';
     return null;
-  };
-
-  /** Whether an IndexedDB-tier value is within its key's byte ceiling, if any. */
-  const fitsIdbCeiling = (key: string, value: unknown): boolean => {
-    const limits = Object.entries(idbMaxEntryBytes).filter(([pattern]) => key.includes(pattern));
-    if (limits.length === 0) return true;
-    let size: number;
-    try {
-      size = JSON.stringify(value)?.length ?? 0;
-    } catch {
-      return false;
-    }
-    return limits.every(([, max]) => size <= max);
   };
 
   /**
@@ -267,11 +247,7 @@ export function createCacheProvider(options: CacheProviderOptions = {}): ScopedS
     for (const k of dels) void localDataCache.delete(buildLocalDataKey(scope, k));
     for (const k of writes) {
       const v = cacheMapInstance.get(k);
-      if (v === undefined) continue;
-      if (fitsIdbCeiling(k, v)) void localDataCache.set(buildLocalDataKey(scope, k), v, version);
-      // Drop the previous (smaller) row too, or it would hydrate a stale value
-      // that no longer matches what the live read returns.
-      else void localDataCache.delete(buildLocalDataKey(scope, k));
+      if (v !== undefined) void localDataCache.set(buildLocalDataKey(scope, k), v, version);
     }
   };
 
@@ -512,15 +488,6 @@ export const CACHE_TIERS = {
     'page:', // page detail / list / meta
     'notebook:', // notebook documents
     'brief:', // briefs
-    // Working Sidebar Review / PR tabs, keyed by device + directory (+ PR
-    // number / branch). Quoted so each matches only its own key. Review keeps
-    // a path + line-count summary only (`device:gitReviewSummary`); the full
-    // diff (`device:gitReviewPatches`) stays memory-only. No credentials here.
-    '"device:gitReviewSummary"',
-    '"device:gitLinkedPR"',
-    '"device:gitPullRequestDetail"',
-    '"device:gitPullRequestActivity"',
-    '"device:gitPullRequestMergeContext"',
   ],
   /** Small, frequently-changing list shells → localStorage (sync first paint). */
   local: [
@@ -537,17 +504,6 @@ export const CACHE_TIERS = {
 } as const;
 
 /**
- * Byte ceilings (serialized JSON length) for IndexedDB-tier keys whose payload
- * is unbounded: review summaries grow with the number of changed files, PR
- * activity with comment bodies. Oversized entries stay memory-only.
- */
-export const CACHE_IDB_MAX_ENTRY_BYTES: Record<string, number> = {
-  '"device:gitPullRequestActivity"': 512 * 1024,
-  '"device:gitPullRequestDetail"': 512 * 1024,
-  '"device:gitReviewSummary"': 512 * 1024,
-};
-
-/**
  * Provider factory for SWRConfig.
  *
  * @param getScope resolver for the current identity scope. Evaluated lazily so
@@ -561,7 +517,6 @@ export const swrCacheProvider = (
 ): ScopedSWRProvider => {
   return createCacheProvider({
     getScope,
-    idbMaxEntryBytes: CACHE_IDB_MAX_ENTRY_BYTES,
     idbPatterns: [...CACHE_TIERS.idb],
     // Quarantine writes until the session check resolves (`isScopeTrusted`).
     // The active scope is optimistic (persisted last-known user) before the

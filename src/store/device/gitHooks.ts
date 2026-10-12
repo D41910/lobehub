@@ -1,8 +1,5 @@
 import { isDesktop } from '@lobechat/const';
-import type {
-  GitWorkingTreePatch,
-  SubmoduleWorkingTreePatches,
-} from '@lobechat/electron-client-ipc';
+import type { ReplicaSyncSchedule } from '@lobechat/replica/zustand';
 import type {
   DeviceGitAheadBehind,
   DeviceGitPullRequestActivity,
@@ -12,64 +9,31 @@ import type {
   DeviceGitWorkingTreeStatus,
   DeviceGitWorktreeListItem,
 } from '@lobechat/types';
+import { useMemo } from 'react';
 
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import { deviceKeys, localFileKeys } from '@/libs/swr/keys';
-import { type GitBranchSummary, type GitLinkedPRSummary, gitService } from '@/services/git';
+import { type GitBranchSummary, gitService } from '@/services/git';
 
-export type ReviewMode = 'unstaged' | 'branch';
+import {
+  gitLinkedPRKey,
+  gitPullRequestKey,
+  gitPullRequestMergeContextKey,
+  type GitPullRequestMergeContextParams,
+  type GitPullRequestParams,
+  gitReviewPatchesKey,
+  type GitReviewRead,
+  type ReviewMode,
+  type ReviewPatchesData,
+} from './gitReview/projection';
+import { type GitReviewStore, useGitReviewStore } from './gitReview/store';
+
+export type { ReviewMode, ReviewPatchesData } from './gitReview/projection';
+export { toReviewPatchesSummary } from './gitReview/projection';
 
 const UNSTAGED_REVIEW_REFRESH_INTERVAL = 10 * 1000;
 const BRANCH_REVIEW_REFRESH_INTERVAL = 30 * 1000;
 const PULL_REQUEST_DETAIL_REFRESH_INTERVAL = 30 * 1000;
-
-export interface ReviewPatchesData {
-  baseRef?: string;
-  headRef?: string;
-  mode: ReviewMode;
-  patches: GitWorkingTreePatch[];
-  /**
-   * Per-submodule patch groups. Undefined when the parent has no dirty
-   * submodules (unstaged) or no submodule pointer differences (branch).
-   */
-  submodules?: SubmoduleWorkingTreePatches[];
-  /**
-   * Set on the persisted summary (see `toReviewPatchesSummary`): paths and
-   * line counts are real, but every `patch` body is empty until the live read
-   * lands.
-   */
-  summaryOnly?: boolean;
-}
-
-const summarizePatch = ({
-  additions,
-  deletions,
-  filePath,
-  isBinary,
-  status,
-  truncated,
-}: GitWorkingTreePatch): GitWorkingTreePatch => ({
-  additions,
-  deletions,
-  filePath,
-  isBinary,
-  patch: '',
-  status,
-  truncated,
-});
-
-/**
- * The persistable shape of a review read: file paths, statuses and +/- counts
- * without diff text, which can run to megabytes and is cheap to re-read.
- */
-export const toReviewPatchesSummary = (data: ReviewPatchesData): ReviewPatchesData => ({
-  baseRef: data.baseRef,
-  headRef: data.headRef,
-  mode: data.mode,
-  patches: data.patches.map(summarizePatch),
-  submodules: data.submodules?.map((sub) => ({ ...sub, patches: sub.patches.map(summarizePatch) })),
-  summaryOnly: true,
-});
 
 /**
  * Git read hooks for a working directory, transport-agnostic: the fetcher goes
@@ -80,29 +44,6 @@ export const toReviewPatchesSummary = (data: ReviewPatchesData): ReviewPatchesDa
  */
 const isEnabled = (deviceId: string | undefined, path: string | undefined): path is string =>
   !!path && (!!deviceId || isDesktop);
-
-const fetchUnstagedReviewPatches = async (
-  dirPath: string,
-  deviceId: string | undefined,
-): Promise<ReviewPatchesData> => {
-  const result = await gitService.getGitWorkingTreePatches({ deviceId, path: dirPath });
-  return { mode: 'unstaged', patches: result?.patches ?? [], submodules: result?.submodules };
-};
-
-const fetchBranchReviewPatches = async (
-  dirPath: string,
-  baseRef: string | undefined,
-  deviceId: string | undefined,
-): Promise<ReviewPatchesData> => {
-  const result = await gitService.getGitBranchDiff({ baseRef, deviceId, path: dirPath });
-  return {
-    baseRef: result?.baseRef,
-    headRef: result?.headRef,
-    mode: 'branch',
-    patches: result?.patches ?? [],
-    submodules: result?.submodules,
-  };
-};
 
 export const getReviewRefreshInterval = (mode: ReviewMode, active: boolean) => {
   if (!active) return 0;
@@ -124,14 +65,6 @@ export const getGitReviewPatchesKey = ({
 }: GitReviewCacheParams) =>
   dirPath ? deviceKeys.gitReviewPatches(deviceId ?? 'local', dirPath, mode, baseRef ?? '') : null;
 
-export const getGitReviewSummaryKey = ({
-  baseRef,
-  deviceId,
-  dirPath,
-  mode,
-}: GitReviewCacheParams) =>
-  dirPath ? deviceKeys.gitReviewSummary(deviceId ?? 'local', dirPath, mode, baseRef ?? '') : null;
-
 export const invalidateGitReviewCaches = async ({
   baseRef,
   deviceId,
@@ -142,6 +75,7 @@ export const invalidateGitReviewCaches = async ({
 
   const cacheDeviceId = deviceId ?? 'local';
   await Promise.all([
+    // The review replica syncs under this key, so this re-runs its read.
     mutate(deviceKeys.gitReviewPatches(cacheDeviceId, dirPath, mode, baseRef ?? '')),
     mutate(deviceKeys.gitWorkingTreeStatus(cacheDeviceId, dirPath)),
     mutate(deviceKeys.gitAheadBehind(cacheDeviceId, dirPath)),
@@ -149,84 +83,100 @@ export const invalidateGitReviewCaches = async ({
   ]);
 };
 
+export interface GitReplicaReadResult<T> {
+  data: T | undefined;
+  error: unknown;
+  /** Nothing to paint yet (no persisted row, no response) and a read is pending. */
+  isLoading: boolean;
+  isValidating: boolean;
+  /** Re-run the read (SWR-shaped, for the existing refresh callers). */
+  mutate: () => Promise<unknown>;
+}
+
+interface ReplicaReadSlice<TParams> {
+  useSync: (
+    params: TParams | null | undefined,
+    options?: ReplicaSyncSchedule & { shouldRetryOnError?: boolean },
+  ) => {
+    error: unknown;
+    isHydrated: boolean;
+    isValidating: boolean;
+    revalidate: () => Promise<unknown>;
+  };
+}
+
+/**
+ * Read one of the Review / PR replicas (see `./gitReview`): the persisted row
+ * paints first, the device read confirms it in the background. Returns the
+ * SWR-like shape the Review / PR tabs were written against.
+ */
+const useGitReviewReplica = <TParams, TStored>(
+  pick: (slices: GitReviewStore['slices']) => ReplicaReadSlice<TParams>,
+  selectMap: (state: GitReviewStore) => Record<string, TStored>,
+  toKey: (params: TParams) => string,
+  params: TParams | null,
+  schedule: ReplicaSyncSchedule,
+) => {
+  const key = params ? toKey(params) : undefined;
+  const stored = useGitReviewStore((s) => (key ? selectMap(s)[key] : undefined));
+  // The driver forwards SWR options as given: a failed git read (dead path,
+  // unreachable device, missing `gh`) is not retried, like the SWR hooks these replaced.
+  const { error, isHydrated, isValidating, revalidate } = pick(
+    useGitReviewStore.getState().slices,
+  ).useSync(params, { ...schedule, shouldRetryOnError: false });
+
+  return {
+    error,
+    isLoading: !!params && stored === undefined && !error && (!isHydrated || isValidating),
+    isValidating,
+    mutate: revalidate,
+    stored,
+  };
+};
+
+/** A `GitReviewRead` replica, unwrapped into the SWR-shaped result. */
+const useGitReviewRead = <TParams, T>(
+  pick: (slices: GitReviewStore['slices']) => ReplicaReadSlice<TParams>,
+  selectMap: (state: GitReviewStore) => Record<string, GitReviewRead<T>>,
+  toKey: (params: TParams) => string,
+  params: TParams | null,
+  schedule: ReplicaSyncSchedule,
+): GitReplicaReadResult<T> => {
+  const { stored, ...rest } = useGitReviewReplica(pick, selectMap, toKey, params, schedule);
+  return { ...rest, data: stored?.value };
+};
+
+/**
+ * Review tab diff. A replica: after a reload the persisted summary (paths +
+ * line counts, `summaryOnly`, no diff text) paints first, and the live read
+ * replaces it with the full diff.
+ */
 export const useReviewPatches = (
   dirPath: string | undefined,
   mode: ReviewMode,
   baseRef?: string,
   deviceId?: string,
   active = true,
-) => {
+): GitReplicaReadResult<ReviewPatchesData> => {
   const enabled = active && isEnabled(deviceId, dirPath);
-  const key = enabled ? getGitReviewPatchesKey({ baseRef, deviceId, dirPath, mode }) : null;
-
-  return useClientDataSWR<ReviewPatchesData>(
-    key,
-    async () => {
-      const data =
-        mode === 'branch'
-          ? await fetchBranchReviewPatches(dirPath!, baseRef, deviceId)
-          : await fetchUnstagedReviewPatches(dirPath!, deviceId);
-      // Every live read refreshes the persisted summary the Review tab paints
-      // from on the next cold start.
-      void mutate(
-        getGitReviewSummaryKey({ baseRef, deviceId, dirPath, mode }),
-        toReviewPatchesSummary(data),
-        { revalidate: false },
-      );
-      return data;
-    },
+  const params = useMemo(
+    () => (enabled ? { baseRef, deviceId, mode, path: dirPath! } : null),
+    [enabled, baseRef, deviceId, mode, dirPath],
+  );
+  const { stored, ...rest } = useGitReviewReplica(
+    (slices) => slices.reviewPatches,
+    (s) => s.gitReviewPatchesMap,
+    gitReviewPatchesKey,
+    params,
     {
       focusThrottleInterval: mode === 'branch' ? 30 * 1000 : 5 * 1000,
       refreshInterval: getReviewRefreshInterval(mode, active),
       refreshWhenHidden: false,
       revalidateOnFocus: true,
       revalidateOnReconnect: true,
-      shouldRetryOnError: false,
     },
   );
-};
-
-/**
- * Last persisted review summary (paths + line counts, no diff text) for the
- * same device / directory / mode / base. Cache-only: never fetches; written by
- * `useReviewPatches` after each live read.
- */
-export const useReviewPatchesSummary = (
-  dirPath: string | undefined,
-  mode: ReviewMode,
-  baseRef?: string,
-  deviceId?: string,
-  active = true,
-) =>
-  useClientDataSWR<ReviewPatchesData>(
-    active && isEnabled(deviceId, dirPath)
-      ? getGitReviewSummaryKey({ baseRef, deviceId, dirPath, mode })
-      : null,
-    null,
-    { revalidateOnFocus: false, revalidateOnReconnect: false },
-  );
-
-/**
- * Review data stale-first: the live read when it has landed, otherwise the
- * persisted summary, so a reload lists files immediately instead of spinning.
- * `diffPending` stays true until the live read (with diff text) arrives.
- */
-export const useStaleFirstReviewPatches = (
-  dirPath: string | undefined,
-  mode: ReviewMode,
-  baseRef?: string,
-  deviceId?: string,
-  active = true,
-) => {
-  const live = useReviewPatches(dirPath, mode, baseRef, deviceId, active);
-  const { data: summary } = useReviewPatchesSummary(dirPath, mode, baseRef, deviceId, active);
-
-  return {
-    data: live.data ?? summary,
-    diffPending: !live.data,
-    isLoading: live.isLoading,
-    isValidating: live.isValidating,
-  };
+  return { ...rest, data: stored };
 };
 
 /**
@@ -257,14 +207,20 @@ export const useFetchGitLinkedPR = (
   path: string | undefined,
   branch: string | undefined,
   isGithub = false,
-) =>
-  useClientDataSWR<GitLinkedPRSummary | undefined>(
-    isGithub && branch && isEnabled(deviceId, path)
-      ? deviceKeys.gitLinkedPR(deviceId ?? 'local', path, branch)
-      : null,
-    () => gitService.getLinkedPullRequest({ branch: branch!, deviceId, path: path! }),
-    { dedupingInterval: 60 * 1000, focusThrottleInterval: 60 * 1000, shouldRetryOnError: false },
+) => {
+  const enabled = isGithub && !!branch && isEnabled(deviceId, path);
+  const params = useMemo(
+    () => (enabled ? { branch: branch!, deviceId, path: path! } : null),
+    [enabled, branch, deviceId, path],
   );
+  return useGitReviewRead(
+    (slices) => slices.linkedPR,
+    (s) => s.gitLinkedPRMap,
+    gitLinkedPRKey,
+    params,
+    { dedupingInterval: 60 * 1000, focusThrottleInterval: 60 * 1000 },
+  );
+};
 
 /**
  * Working-tree dirty-file counts. Revalidates on focus (5s throttle) so the
@@ -325,21 +281,26 @@ export const useFetchGitPullRequestDetail = (
   path: string | undefined,
   number: number | undefined,
   { active = true }: { active?: boolean } = {},
-) =>
-  useClientDataSWR<DeviceGitPullRequestDetailResult | undefined>(
-    number !== undefined && isEnabled(deviceId, path)
-      ? deviceKeys.gitPullRequestDetail(deviceId ?? 'local', path, number)
-      : null,
-    () =>
-      gitService.getPullRequestDetail({ coreOnly: true, deviceId, number: number!, path: path! }),
+) => {
+  const enabled = number !== undefined && isEnabled(deviceId, path);
+  const params = useMemo(
+    () => (enabled ? { deviceId, number: number!, path: path! } : null),
+    [enabled, deviceId, number, path],
+  );
+  return useGitReviewRead(
+    (slices) => slices.pullRequestDetail,
+    (s) => s.gitPullRequestDetailMap,
+    gitPullRequestKey,
+    params,
     {
       dedupingInterval: 30_000,
       focusThrottleInterval: 60 * 1000,
-      refreshInterval: (detail) => pullRequestDetailRefreshInterval(detail, active),
+      refreshInterval: (latest?: GitReviewRead<DeviceGitPullRequestDetailResult>) =>
+        pullRequestDetailRefreshInterval(latest?.value, active),
       revalidateOnFocus: true,
-      shouldRetryOnError: false,
     },
   );
+};
 
 /** Activity starts once core data can paint; its failure never hides the PR. */
 export const useFetchGitPullRequestActivity = (
@@ -347,19 +308,24 @@ export const useFetchGitPullRequestActivity = (
   path: string | undefined,
   number: number | undefined,
   active = true,
-) =>
-  useClientDataSWR<DeviceGitPullRequestActivity>(
-    number !== undefined && isEnabled(deviceId, path)
-      ? deviceKeys.gitPullRequestActivity(deviceId ?? 'local', path, number)
-      : null,
-    () => gitService.getPullRequestActivity({ deviceId, number: number!, path: path! }),
+) => {
+  const enabled = number !== undefined && isEnabled(deviceId, path);
+  const params = useMemo(
+    () => (enabled ? { deviceId, number: number!, path: path! } : null),
+    [enabled, deviceId, number, path],
+  );
+  return useGitReviewRead<GitPullRequestParams, DeviceGitPullRequestActivity>(
+    (slices) => slices.pullRequestActivity,
+    (s) => s.gitPullRequestActivityMap,
+    gitPullRequestKey,
+    params,
     {
       dedupingInterval: 30_000,
       focusThrottleInterval: 60_000,
       refreshInterval: active ? 30_000 : 0,
-      shouldRetryOnError: false,
     },
   );
+};
 
 /**
  * Slow merge context (permission, branch protection, base drift), keyed on the
@@ -370,33 +336,36 @@ export const useFetchGitPullRequestMergeContext = (
   path: string | undefined,
   detail:
     Pick<DeviceGitPullRequestDetail, 'baseRefName' | 'headRefOid' | 'number' | 'repo'> | undefined,
-) =>
-  useClientDataSWR<DeviceGitPullRequestMergeContext | null | undefined>(
-    detail && isEnabled(deviceId, path)
-      ? deviceKeys.gitPullRequestMergeContext(
-          deviceId ?? 'local',
-          path,
-          detail.number,
-          detail.headRefOid,
-          detail.baseRefName,
-        )
-      : null,
+) => {
+  const enabled = !!detail && isEnabled(deviceId, path);
+  const { baseRefName, headRefOid, number } = detail ?? {};
+  const repoName = detail?.repo.name;
+  const repoOwner = detail?.repo.owner;
+  const params = useMemo(
     () =>
-      gitService.getPullRequestMergeContext({
-        baseRefName: detail!.baseRefName,
-        deviceId,
-        headRefOid: detail!.headRefOid,
-        number: detail!.number,
-        path: path!,
-        repo: detail!.repo,
-      }),
-    {
-      dedupingInterval: 30_000,
-      focusThrottleInterval: 60 * 1000,
-      revalidateOnFocus: true,
-      shouldRetryOnError: false,
-    },
+      enabled
+        ? {
+            baseRefName: baseRefName!,
+            deviceId,
+            headRefOid: headRefOid!,
+            number: number!,
+            path: path!,
+            repo: { name: repoName!, owner: repoOwner! },
+          }
+        : null,
+    [enabled, baseRefName, deviceId, headRefOid, number, path, repoName, repoOwner],
   );
+  return useGitReviewRead<
+    GitPullRequestMergeContextParams,
+    DeviceGitPullRequestMergeContext | null
+  >(
+    (slices) => slices.pullRequestMergeContext,
+    (s) => s.gitPullRequestMergeContextMap,
+    gitPullRequestMergeContextKey,
+    params,
+    { dedupingInterval: 30_000, focusThrottleInterval: 60 * 1000, revalidateOnFocus: true },
+  );
+};
 
 /**
  * Lazy-loaded list of remote branches under `refs/remotes/origin/*`.
