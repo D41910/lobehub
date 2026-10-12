@@ -43,6 +43,7 @@ import {
   mapWithConcurrency,
   previewAcceptancePurge,
   purgeAcceptance,
+  resolveEvidenceFiles,
   REVIEW_PREDICT_CONCURRENCY,
   REVIEW_PREDICT_MODEL_CONFIG,
   shouldSurfaceProposal,
@@ -768,7 +769,7 @@ export const acceptanceRouter = router({
           .filter(
             (e) => timelineResultIds.has(e.checkResultId) || flowResultIds.has(e.checkResultId),
           )
-          .map(async (e) => ({ ...e, ...(await resolveFileMeta(e.fileId ?? null)) })),
+          .map((e) => resolveEvidenceFiles(resolveFileMeta, e)),
       );
       const evidenceByResult = new Map<string, typeof enriched>();
       for (const e of enriched) {

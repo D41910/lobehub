@@ -4,7 +4,7 @@ import { Empty, Flexbox, Icon, Image } from '@lobehub/ui';
 import { Text } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar, useResponsive } from 'antd-style';
 import dayjs from 'dayjs';
-import { FileText, Film, Paperclip } from 'lucide-react';
+import { FileText, Film, Paperclip, SquareTerminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { useIsHydrated } from '@/hooks/useIsHydrated';
@@ -159,9 +159,15 @@ const AcceptanceResources = () => {
                 ) : (
                   <div className={styles.nonVisual}>
                     <Icon
-                      icon={evidence.type === 'video' ? Film : FileText}
                       size={16}
                       style={{ color: cssVar.colorTextTertiary }}
+                      icon={
+                        evidence.type === 'video'
+                          ? Film
+                          : evidence.type === 'terminal'
+                            ? SquareTerminal
+                            : FileText
+                      }
                     />
                     <Text ellipsis fontSize={13}>
                       {name}
