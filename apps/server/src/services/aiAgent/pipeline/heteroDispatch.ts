@@ -403,7 +403,15 @@ export const dispatchHeteroAgent = async (
   const heteroService = new HeterogeneousAgentService(deps.db, deps.userId, {
     workspaceId: deps.workspaceId,
   });
-  const resumeSessionId = await heteroService.getHeterogeneousResumeSessionId(topicId);
+  // A Codex Fork thread owns its native child session; every other run (including other
+  // thread runs) keeps the topic-scoped binding.
+  const codexForkThread =
+    heteroType === 'codex' && appContext?.threadId
+      ? await heteroService.getCodexForkThread(topicId, appContext.threadId)
+      : undefined;
+  const resumeSessionId = codexForkThread
+    ? codexForkThread.metadata?.heteroSessionId
+    : await heteroService.getHeterogeneousResumeSessionId(topicId);
   // Sign an operation-scoped JWT so the CLI can authenticate against
   // heteroIngest / heteroFinish without full user credentials.
   let operationJwt: string;
@@ -1013,6 +1021,7 @@ export const dispatchHeteroAgent = async (
       try {
         codexRuntime = await resolveCodexDeviceRuntime({
           authMode: heterogeneousProvider?.authMode,
+          forkThread: codexForkThread,
           heteroType,
           isAppServerLabEnabled: async () => {
             try {
@@ -1032,6 +1041,12 @@ export const dispatchHeteroAgent = async (
                 cliDeviceWorkspaceId,
               )
             )?.supportedAgentRuntimes,
+          resolveBranchRun: () =>
+            heteroService.getCodexBranchRun(
+              codexForkThread!,
+              userMessageId ?? parentMessageId ?? '',
+            ),
+          resumeSessionId,
         });
       } catch (err) {
         codexRuntime = {
@@ -1066,6 +1081,12 @@ export const dispatchHeteroAgent = async (
         };
       }
       const nativeCodex = codexRuntime.kind === 'native' ? codexRuntime : undefined;
+      // A Fork branch keeps the working directory captured from its source.
+      const cwdMetadata =
+        codexForkThread?.metadata?.workingDirectory ||
+        codexForkThread?.metadata?.workingDirectoryConfig
+          ? codexForkThread.metadata
+          : topic?.metadata;
 
       // Resolve the working directory for the run: a topic-level override
       // wins, else the device's user-configured defaultCwd. The device row
@@ -1090,8 +1111,8 @@ export const dispatchHeteroAgent = async (
         // device cannot have it (`owner/repo` is a cloud repo identifier).
         repos: topicRepos,
         topicDeviceId: topic?.metadata?.boundDeviceId,
-        topicWorkingDirectory: topic?.metadata?.workingDirectory,
-        topicWorkingDirectoryConfig: topic?.metadata?.workingDirectoryConfig,
+        topicWorkingDirectory: cwdMetadata?.workingDirectory,
+        topicWorkingDirectoryConfig: cwdMetadata?.workingDirectoryConfig,
         workingDirByDevice: agentConfig.agencyConfig?.workingDirByDevice,
       });
       const deviceCwd = getWorkingDirEffectivePath(deviceCwdConfig);
@@ -1100,23 +1121,29 @@ export const dispatchHeteroAgent = async (
       // recorded at agent level (`workingDirByDevice`) when no topic existed.
       // Persist the resolved cwd onto the topic so the sidebar groups it
       // under the right project and the next turn reuses the same directory.
-      await deps.bindTopicWorkingDirectory({
-        config: deviceCwdConfig,
-        currentDeviceId: topic?.metadata?.boundDeviceId,
-        currentWorkingDirectory: topic?.metadata?.workingDirectory,
-        deviceId: dispatchDeviceId,
-        topicId,
-      });
+      // A Fork branch runs in its source's directory and never re-pins the topic.
+      if (!codexForkThread)
+        await deps.bindTopicWorkingDirectory({
+          config: deviceCwdConfig,
+          currentDeviceId: topic?.metadata?.boundDeviceId,
+          currentWorkingDirectory: topic?.metadata?.workingDirectory,
+          deviceId: dispatchDeviceId,
+          topicId,
+        });
 
       // Build only device-relevant context instead of reusing the cloud-sandbox one
       // (which describes an ephemeral /workspace + pre-cloned repos and would mislead
       // the agent). The spawned CLI already receives deviceCwd as its actual cwd.
+      // A Fork branch's history is its native thread; a serialized topic transcript
+      // would describe the wrong conversation, so strict runs never receive one.
+      const strictNativeHistory = nativeCodex?.strictHistory === true;
       const deviceSystemContext = buildRemoteDeviceHeteroContext({
         agentSystemContext,
-        conversationHistory: resumeSessionId ? undefined : conversationHistory,
+        conversationHistory:
+          strictNativeHistory || resumeSessionId ? undefined : conversationHistory,
       });
       const deviceResumeFallbackSystemContext =
-        resumeSessionId && conversationHistory
+        !strictNativeHistory && resumeSessionId && conversationHistory
           ? buildRemoteDeviceHeteroContext({
               agentSystemContext,
               conversationHistory,
@@ -1139,6 +1166,7 @@ export const dispatchHeteroAgent = async (
             cwd: deviceCwd,
             deviceId: dispatchDeviceId,
             resumeFallbackSystemContext: deviceResumeFallbackSystemContext,
+            resumeSessionId: nativeCodex ? nativeCodex.resumeSessionId : resumeSessionId,
             systemContext: deviceSystemContext,
             // Route to the workspace pool when this is a workspace device; the
             // operation JWT stays member-scoped (the run belongs to the member).
@@ -1203,8 +1231,14 @@ export const dispatchHeteroAgent = async (
         log('execAgent: failed to patch runningOperation with device info: %O', err);
       }
     } else {
-      if (!supportsCloudHeterogeneousSandbox(heteroType)) {
-        const message = `${getHeterogeneousAgentTitle(heteroType)} requires a local or connected device; cloud sandbox execution is not supported.`;
+      // An established Fork child belongs to the device holding its native history.
+      const sandboxUnsupported = codexForkThread
+        ? 'Native Codex Fork requires the connected device holding its native history'
+        : !supportsCloudHeterogeneousSandbox(heteroType)
+          ? `${getHeterogeneousAgentTitle(heteroType)} requires a local or connected device; cloud sandbox execution is not supported.`
+          : undefined;
+      if (sandboxUnsupported) {
+        const message = sandboxUnsupported;
         const terminalReported = await finalizeHeteroDispatchError(deps, {
           agentId: resolvedAgentId,
           assistantMessageId,
