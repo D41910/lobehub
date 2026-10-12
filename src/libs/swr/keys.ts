@@ -927,14 +927,6 @@ export const forkKeys = {
   source: def('fork:source', (identifier: string) => ['fork:source', identifier]),
 };
 
-// ---- portal -------------------------------------------------------------
-export const portalKeys = {
-  documentHeader: def('portal:documentHeader', (documentId: string) => [
-    'portal:documentHeader',
-    documentId,
-  ]),
-};
-
 // ---- local file ---------------------------------------------------------
 export const localFileKeys = {
   gitWorkingTreeFiles: def(
@@ -1174,7 +1166,6 @@ export const swrKeys = {
   ollama: ollamaKeys,
   onboarding: onboardingKeys,
   openInApp: openInAppKeys,
-  portal: portalKeys,
   ragEval: ragEvalKeys,
   recent: recentKeys,
   recommendations: recommendationsKeys,

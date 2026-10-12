@@ -1,6 +1,5 @@
 import { revalidateReplica } from '@/libs/replica';
 import { mutate } from '@/libs/swr';
-import { portalKeys } from '@/libs/swr/keys';
 import { documentDetailResource } from '@/store/document/slices/document/projection';
 import { notebookDocumentsResource } from '@/store/notebook/projection';
 import { pageDetailResource, pageListResource } from '@/store/page/projection';
@@ -45,7 +44,6 @@ export const invalidateDocumentMutation = async (
     // refresh them here or a rename / move would not reach the Pages sidebar or
     // the page header until a remount.
     revalidations.push(revalidateReplica(pageDetailResource, documentId));
-    revalidations.push(mutate(portalKeys.documentHeader(documentId)));
   }
 
   if (documentId || refreshPageDocuments) {

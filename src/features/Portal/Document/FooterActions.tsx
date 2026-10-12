@@ -8,10 +8,7 @@ import { Download, MessageSquareText } from 'lucide-react';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useClientDataSWR } from '@/libs/swr';
-import { portalKeys } from '@/libs/swr/keys';
 import { agentDocumentService } from '@/services/agentDocument';
-import { documentService } from '@/services/document';
 import { useChatStore } from '@/store/chat';
 import { useDocumentStore } from '@/store/document';
 
@@ -60,10 +57,8 @@ const FooterActions = memo<FooterActionsProps>(({ agentId, documentId, fileBacke
   // including an intentionally emptied buffer — and fall back to the SWR copy
   // only while the editor has not produced a buffer for this document.
   const storeContent = useDocumentStore((s) => s.documents[documentId]?.content);
-  const { data: documentMeta } = useClientDataSWR(
-    documentId ? portalKeys.documentHeader(documentId) : null,
-    () => documentService.getDocumentById(documentId!),
-  );
+  const useFetchDocumentDetail = useDocumentStore((s) => s.useFetchDocumentDetail);
+  const { data: documentMeta } = useFetchDocumentDetail(documentId);
   const markdown = storeContent ?? documentMeta?.content ?? '';
 
   // A pending guard, not just visual: the server's lookup-then-create is not
