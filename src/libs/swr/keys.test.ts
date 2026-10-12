@@ -216,14 +216,22 @@ describe('sandboxKeys', () => {
       unstable_serialize(key).includes(pattern),
     );
 
-  // Regression: the composer's instance chip and the working panel's sandbox
-  // directory used `sandbox-*` keys no CACHE_TIERS pattern matched, so every
-  // reload re-fetched them before the chip or the Files tab could render.
-  it('routes the picker lists and the instance directory to a persisted tier', () => {
+  // Regression: the composer's instance chip, the entitlement that gates it and
+  // the working panel's sandbox directory used `sandbox-*` keys no CACHE_TIERS
+  // pattern matched, so every reload re-fetched them before the chip or the
+  // Files tab could render.
+  it('routes the entitlement, picker lists and instance directory to a persisted tier', () => {
+    expect(persisted(sandboxKeys.entitlement('ws-1'))).toBe(true);
     expect(persisted(sandboxKeys.environments())).toBe(true);
     expect(persisted(sandboxKeys.instances('topic-1'))).toBe(true);
     expect(persisted(sandboxKeys.instances())).toBe(true);
     expect(persisted(sandboxKeys.instanceDir('inst-1'))).toBe(true);
+  });
+
+  it('keeps each workspace entitlement in a separate cache entry', () => {
+    expect(unstable_serialize(sandboxKeys.entitlement('ws-1'))).not.toBe(
+      unstable_serialize(sandboxKeys.entitlement(null)),
+    );
   });
 
   it('keeps per-topic occupancy in separate cache entries', () => {

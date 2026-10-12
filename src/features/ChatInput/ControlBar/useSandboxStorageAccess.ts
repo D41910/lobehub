@@ -5,6 +5,7 @@ import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspace
 import { resolveExecutionTarget } from '@/helpers/executionTarget';
 import { useIsGatewayModeEnabled } from '@/helpers/gatewayMode';
 import { useEffectiveAgencyConfig } from '@/hooks/useEffectiveAgencyConfig';
+import { sandboxKeys } from '@/libs/swr/keys';
 import { sandboxStorageService } from '@/services/sandboxStorage';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
@@ -66,7 +67,7 @@ export const useSandboxStorageAccess = (agentId: string): SandboxStorageAccessRe
   // previous workspace's answer and quota to the next one until a reload —
   // offering persistence where there is none, or hiding one there is.
   const { data } = useSWR(
-    shouldAsk ? ['sandbox-storage-entitlement', workspaceId ?? ''] : null,
+    shouldAsk ? sandboxKeys.entitlement(workspaceId) : null,
     () => sandboxStorageService.getEntitlement(),
     { revalidateOnFocus: false },
   );

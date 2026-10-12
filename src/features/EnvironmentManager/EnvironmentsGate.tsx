@@ -10,6 +10,7 @@ import useSWR from 'swr';
 import { SandboxStorageUpgradeGuide } from '@/business/client/features/SandboxStorageUpsell';
 import { useActiveWorkspaceId } from '@/business/client/hooks/useActiveWorkspaceId';
 import { RouteLoading } from '@/components/Skeleton/RouteSegment';
+import { sandboxKeys } from '@/libs/swr/keys';
 import { sandboxStorageService } from '@/services/sandboxStorage';
 
 /**
@@ -26,9 +27,8 @@ import { sandboxStorageService } from '@/services/sandboxStorage';
 const EnvironmentsGate = memo<PropsWithChildren>(({ children }) => {
   const { t } = useTranslation('setting');
   const workspaceId = useActiveWorkspaceId();
-  const { data, error, isLoading, mutate } = useSWR(
-    ['sandbox-storage-entitlement', workspaceId ?? ''],
-    () => sandboxStorageService.getEntitlement(),
+  const { data, error, isLoading, mutate } = useSWR(sandboxKeys.entitlement(workspaceId), () =>
+    sandboxStorageService.getEntitlement(),
   );
 
   // A failed lookup is not an unentitled account, and it is not a slow one

@@ -444,6 +444,16 @@ export const videoKeys = {
 // configuration or a source URL. Callers go through `useClientDataSWR`, which
 // adds the workspace to the key.
 export const sandboxKeys = {
+  /**
+   * `{ entitled, quotaBytes }` only. Gates the composer's chip, so it is
+   * persisted with the lists it gates; the server still resolves the claim on
+   * every sandbox call. The workspace is in the key because the server answers
+   * from the active one.
+   */
+  entitlement: def('sandbox:entitlement', (workspaceId?: string | null) => [
+    'sandbox:entitlement',
+    workspaceId ?? '',
+  ]),
   environments: def('sandbox:environments', () => ['sandbox:environments']),
   instanceDir: def('sandbox:instanceDir', (instanceId: string) => [
     'sandbox:instanceDir',

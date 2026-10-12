@@ -502,6 +502,7 @@ export const CACHE_TIERS = {
     'modelConfig:', // small remote model config shells used by home starter chips
     // Cloud sandbox picker chip + working panel directory. Slim projections
     // only; never `sandbox:` alone, which also appears inside localFile keys.
+    'sandbox:entitlement',
     'sandbox:environments',
     'sandbox:instances',
     'sandbox:instanceDir',
