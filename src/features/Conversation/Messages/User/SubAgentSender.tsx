@@ -1,6 +1,7 @@
 'use client';
 
 import type { MessageSubAgentCallback } from '@lobechat/types';
+import { Flexbox } from '@lobehub/ui';
 import { Button, Tag } from '@lobehub/ui/base-ui';
 import { ListTree } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -31,8 +32,24 @@ export const useSubAgentSenderIdentity = (
   return { avatar, title: callback.name || agentTitle || '' };
 };
 
-/** Header addons of a sub-agent's report: the sub-agent tag, its outcome, and its thread. */
+/** Header addons of a sub-agent's report: the sub-agent tag and its outcome. */
 export const SubAgentSenderTags = ({ callback }: { callback: MessageSubAgentCallback }) => {
+  const { t } = useTranslation('chat');
+
+  return (
+    <>
+      <Tag size={'small'}>{t('subAgentCallback.tag')}</Tag>
+      {callback.status === 'error' && (
+        <Tag color={'error'} size={'small'}>
+          {t('subAgentCallback.failed')}
+        </Tag>
+      )}
+    </>
+  );
+};
+
+/** Under a sub-agent's report: the way into its thread, once the thread is listed. */
+export const SubAgentThreadLink = ({ callback }: { callback: MessageSubAgentCallback }) => {
   const { t } = useTranslation('chat');
 
   const thread = useChatStore((s) =>
@@ -46,28 +63,22 @@ export const SubAgentSenderTags = ({ callback }: { callback: MessageSubAgentCall
     (s) => !!thread && portalThreadSelectors.portalThreadId(s) === thread.id,
   );
 
+  if (!thread) return null;
+
   return (
-    <>
-      <Tag size={'small'}>{t('subAgentCallback.tag')}</Tag>
-      {callback.status === 'error' && (
-        <Tag color={'error'} size={'small'}>
-          {t('subAgentCallback.failed')}
-        </Tag>
-      )}
-      {thread && (
-        <Button
-          icon={ListTree}
-          size={'small'}
-          type={'text'}
-          onClick={() =>
-            isOpenInPortal
-              ? closeThreadPortal()
-              : openThreadInPortal(thread.id, thread.sourceMessageId)
-          }
-        >
-          {isOpenInPortal ? t('thread.closeSubagentThread') : t('thread.openSubagentThread')}
-        </Button>
-      )}
-    </>
+    <Flexbox horizontal justify={'flex-end'}>
+      <Button
+        icon={ListTree}
+        size={'small'}
+        type={'text'}
+        onClick={() =>
+          isOpenInPortal
+            ? closeThreadPortal()
+            : openThreadInPortal(thread.id, thread.sourceMessageId)
+        }
+      >
+        {isOpenInPortal ? t('thread.closeSubagentThread') : t('thread.openSubagentThread')}
+      </Button>
+    </Flexbox>
   );
 };

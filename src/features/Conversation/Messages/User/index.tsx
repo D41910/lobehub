@@ -28,7 +28,11 @@ import { ScmEventAvatar, ScmEventSenderTitle } from './components/ScmEventSender
 import { UserMessageExtra } from './Extra';
 import { getBotSender, resolveSenderIdentity } from './resolveSenderIdentity';
 import ScheduledRunFooter from './ScheduledRunFooter';
-import { SubAgentSenderTags, useSubAgentSenderIdentity } from './SubAgentSender';
+import {
+  SubAgentSenderTags,
+  SubAgentThreadLink,
+  useSubAgentSenderIdentity,
+} from './SubAgentSender';
 
 interface UserMessageProps {
   disableEditing?: boolean;
@@ -118,7 +122,6 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
     <ChatItem
       actions={<Actions data={item} disableEditing={editingDisabled} id={id} />}
       avatar={{ avatar, title }}
-      belowMessage={<ScheduledRunFooter id={id} />}
       customAvatarRender={scmSource ? () => <ScmEventAvatar /> : undefined}
       editing={editing}
       id={id}
@@ -140,6 +143,12 @@ const UserMessage = memo<UserMessageProps>(({ id, disableEditing, index }) => {
             {metadata?.steer && <Tag>{t('steer.tag')}</Tag>}
           </>
         ) : undefined
+      }
+      belowMessage={
+        <>
+          {subAgentCallback && <SubAgentThreadLink callback={subAgentCallback} />}
+          <ScheduledRunFooter id={id} />
+        </>
       }
       titleAddon={
         subAgentCallback ? <SubAgentSenderTags callback={subAgentCallback} /> : dmIndicator

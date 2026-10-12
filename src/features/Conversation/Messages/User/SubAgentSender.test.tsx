@@ -4,7 +4,11 @@
 import { render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { SubAgentSenderTags, useSubAgentSenderIdentity } from './SubAgentSender';
+import {
+  SubAgentSenderTags,
+  SubAgentThreadLink,
+  useSubAgentSenderIdentity,
+} from './SubAgentSender';
 
 const agentState = vi.hoisted(() => ({
   agentMap: { 'agt-poet': { avatar: '🪶', title: '诗人' } } as Record<string, any>,
@@ -25,9 +29,11 @@ vi.mock('@/store/chat', () => ({
     selector({ closeThreadPortal: vi.fn(), openThreadInPortal: vi.fn() }),
 }));
 
+const threads = vi.hoisted(() => ({ list: [] as { id: string; sourceMessageId: string }[] }));
+
 vi.mock('@/store/chat/selectors', () => ({
   portalThreadSelectors: { portalThreadId: () => undefined },
-  threadSelectors: { currentTopicThreads: () => [] },
+  threadSelectors: { currentTopicThreads: () => threads.list },
 }));
 
 describe('useSubAgentSenderIdentity', () => {
@@ -71,5 +77,29 @@ describe('SubAgentSenderTags', () => {
 
     rerender(<SubAgentSenderTags callback={{ name: 'Poet', status: 'error', threadId: 'thd' }} />);
     expect(screen.getByText('subAgentCallback.failed')).toBeTruthy();
+  });
+});
+
+describe('SubAgentThreadLink', () => {
+  // The thread link sits under the report, not in its header.
+  it('offers the thread under the message once the thread is listed', () => {
+    const callback = { name: 'Poet', status: 'completed' as const, threadId: 'thd_1' };
+
+    threads.list = [];
+    const { rerender } = render(<SubAgentThreadLink callback={callback} />);
+    expect(screen.queryByText('thread.openSubagentThread')).toBeNull();
+
+    threads.list = [{ id: 'thd_1', sourceMessageId: 'msg_tool' }];
+    rerender(<SubAgentThreadLink callback={callback} />);
+    expect(screen.getByText('thread.openSubagentThread')).toBeTruthy();
+  });
+
+  it('leaves the thread link out of the header tags', () => {
+    threads.list = [{ id: 'thd_1', sourceMessageId: 'msg_tool' }];
+    render(
+      <SubAgentSenderTags callback={{ name: 'Poet', status: 'completed', threadId: 'thd_1' }} />,
+    );
+
+    expect(screen.queryByText('thread.openSubagentThread')).toBeNull();
   });
 });
