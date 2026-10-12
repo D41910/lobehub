@@ -61,4 +61,27 @@ describe('TaskCallbackMessageProcessor', () => {
     expect(result.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(result.metadata.taskCallbackMessagesSurfaced).toBe(0);
   });
+
+  // A background sub-agent's answer rides the same role; the model must read it
+  // as that sub-agent reporting back, with the id it can follow up with.
+  it('wraps a background sub-agent answer with its id, name and status', async () => {
+    const processor = new TaskCallbackMessageProcessor();
+    const context = createContext([
+      {
+        content: 'Found three sources.',
+        metadata: {
+          subAgentCallback: { name: 'Research "X"', status: 'completed', threadId: 'thd_1' },
+        },
+        role: 'taskCallback',
+      },
+    ]);
+
+    const result = await processor.process(context);
+
+    expect(result.messages[0]).toMatchObject({
+      content:
+        '<sub_agent_result id="thd_1" name="Research &quot;X&quot;" status="completed">\nFound three sources.\n</sub_agent_result>',
+      role: 'user',
+    });
+  });
 });

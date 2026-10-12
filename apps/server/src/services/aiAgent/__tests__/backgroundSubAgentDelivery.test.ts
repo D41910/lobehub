@@ -1,28 +1,26 @@
-import { SUB_AGENT_EVENT_TAG } from '@lobechat/const';
 import { RequestTrigger } from '@lobechat/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type BackgroundSubAgentDeliveryDeps,
-  buildSubAgentEventPrompt,
   deliverBackgroundSubAgentResults,
 } from '../backgroundSubAgentDelivery';
 
 const finished = (
   id: string,
   overrides: {
-    agentId?: string | null;
-    description?: string;
+    sender?: { agentId?: string; name?: string };
     state?: object;
-    threadId?: string;
+    threadId?: string | null;
   } = {},
 ) => ({
-  agentId: overrides.agentId === undefined ? 'agent-1' : overrides.agentId,
-  arguments: JSON.stringify({ description: overrides.description ?? `Task ${id}` }),
+  agentId: 'agent-1',
+  arguments: null,
   id,
   state: {
     background: true,
     result: `Answer of ${id}`,
+    sender: overrides.sender ?? { agentId: 'agent-1', name: `Task ${id}` },
     status: 'completed',
     threadId: `thread-${id}`,
     ...overrides.state,
@@ -39,12 +37,14 @@ const createDeps = (opts: {
     agentOperationModel: {
       findById: vi.fn().mockResolvedValue(opts.markerStatus ? { status: opts.markerStatus } : null),
     },
+    appendResultMessages: vi.fn().mockResolvedValue('leaf-msg'),
     execAgent: vi.fn().mockResolvedValue({ operationId: 'wake-op', success: true }),
     messageModel: {
       claimBackgroundSubAgentDelivery: vi.fn(async (ids: string[]) => ids),
       listBackgroundSubAgentCalls: vi.fn().mockResolvedValue(opts.pending ?? []),
       releaseBackgroundSubAgentDelivery: vi.fn().mockResolvedValue(undefined),
     },
+    resolveInterventionConfig: vi.fn().mockResolvedValue({ allowList: [], approvalMode: 'manual' }),
     topicModel: {
       findById: vi.fn().mockResolvedValue({
         agentId: 'agent-1',
@@ -61,26 +61,47 @@ describe('deliverBackgroundSubAgentResults', () => {
     vi.clearAllMocks();
   });
 
-  it('wakes the parent with every finished result of its branch in one turn', async () => {
-    const deps = createDeps({ pending: [finished('a'), finished('b')] });
+  // The answer lands as a message from the sub-agent, and the parent runs off
+  // that history — no made-up user turn.
+  it('lands each answer as a message from its sender, then wakes the parent once', async () => {
+    const deps = createDeps({
+      pending: [finished('a'), finished('b', { sender: { agentId: 'poet', name: 'Poet' } })],
+    });
 
     await deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' });
 
-    expect(deps.messageModel.claimBackgroundSubAgentDelivery).toHaveBeenCalledWith(
-      ['a', 'b'],
-      expect.any(String),
-    );
-    expect(deps.execAgent).toHaveBeenCalledTimes(1);
-    const params = deps.execAgent.mock.calls[0][0];
-    expect(params).toMatchObject({
+    expect(deps.appendResultMessages).toHaveBeenCalledWith({
       agentId: 'agent-1',
-      appContext: { threadId: null, topicId: 'topic-1' },
-      autoStart: true,
-      externalOrigin: { kind: 'sub_agent_results', label: 'Task a, Task b', provider: 'lobehub' },
-      trigger: RequestTrigger.Chat,
+      results: [
+        {
+          callId: 'a',
+          result: 'Answer of a',
+          sender: { agentId: 'agent-1', name: 'Task a' },
+          status: 'completed',
+          threadId: 'thread-a',
+        },
+        {
+          callId: 'b',
+          result: 'Answer of b',
+          sender: { agentId: 'poet', name: 'Poet' },
+          status: 'completed',
+          threadId: 'thread-b',
+        },
+      ],
+      topicId: 'topic-1',
     });
-    expect(params.prompt).toContain('id="thread-a"');
-    expect(params.prompt).toContain('Answer of b');
+    expect(deps.execAgent).toHaveBeenCalledTimes(1);
+    expect(deps.execAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-1' },
+        autoStart: true,
+        parentMessageId: 'leaf-msg',
+        suppressUserMessage: true,
+        trigger: RequestTrigger.Chat,
+        userInterventionConfig: { allowList: [], approvalMode: 'manual' },
+      }),
+    );
   });
 
   it('waits while another run holds the topic', async () => {
@@ -93,6 +114,7 @@ describe('deliverBackgroundSubAgentResults', () => {
     await deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' });
 
     expect(deps.messageModel.listBackgroundSubAgentCalls).not.toHaveBeenCalled();
+    expect(deps.appendResultMessages).not.toHaveBeenCalled();
     expect(deps.execAgent).not.toHaveBeenCalled();
   });
 
@@ -130,9 +152,8 @@ describe('deliverBackgroundSubAgentResults', () => {
 
     await deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' });
 
-    const { prompt } = deps.execAgent.mock.calls[0][0];
-    expect(prompt).not.toContain('Answer of a');
-    expect(prompt).toContain('Answer of b');
+    const [{ results }] = deps.appendResultMessages.mock.calls[0];
+    expect(results.map((item: { callId: string }) => item.callId)).toEqual(['b']);
   });
 
   it('starts nothing when every result was already claimed', async () => {
@@ -141,6 +162,7 @@ describe('deliverBackgroundSubAgentResults', () => {
 
     await deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' });
 
+    expect(deps.appendResultMessages).not.toHaveBeenCalled();
     expect(deps.execAgent).not.toHaveBeenCalled();
   });
 
@@ -164,34 +186,24 @@ describe('deliverBackgroundSubAgentResults', () => {
     expect(deps.messageModel.releaseBackgroundSubAgentDelivery).toHaveBeenCalledWith(['a']);
   });
 
-  it('wakes one branch at a time, oldest first', async () => {
+  it('carries a failure as an error result', async () => {
     const deps = createDeps({
-      pending: [
-        finished('main-1'),
-        finished('thread-1', { threadId: 'user-thread' }),
-        finished('main-2'),
-      ],
+      pending: [finished('a', { state: { result: 'boom', status: 'error' } })],
     });
 
     await deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' });
 
-    expect(deps.messageModel.claimBackgroundSubAgentDelivery).toHaveBeenCalledWith(
-      ['main-1', 'main-2'],
-      expect.any(String),
-    );
-    expect(deps.execAgent).toHaveBeenCalledTimes(1);
+    const [{ results }] = deps.appendResultMessages.mock.calls[0];
+    expect(results[0]).toMatchObject({ result: 'boom', status: 'error' });
   });
 
-  it('marks a failed sub-agent as such and falls back to the topic agent', async () => {
-    const deps = createDeps({
-      pending: [finished('a', { agentId: null, state: { result: 'boom', status: 'error' } })],
-    });
+  it('leaves calls made inside a thread alone', async () => {
+    const deps = createDeps({ pending: [finished('a', { threadId: 'user-thread' })] });
 
     await deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' });
 
-    const params = deps.execAgent.mock.calls[0][0];
-    expect(params.agentId).toBe('agent-1');
-    expect(params.prompt).toContain('status="error"');
+    expect(deps.messageModel.claimBackgroundSubAgentDelivery).not.toHaveBeenCalled();
+    expect(deps.execAgent).not.toHaveBeenCalled();
   });
 
   it('never throws, even when the topic lookup fails', async () => {
@@ -201,25 +213,5 @@ describe('deliverBackgroundSubAgentResults', () => {
     await expect(
       deliverBackgroundSubAgentResults(deps, { topicId: 'topic-1' }),
     ).resolves.toBeUndefined();
-  });
-});
-
-describe('buildSubAgentEventPrompt', () => {
-  it('emits one block without blank lines so it renders as a single card', () => {
-    const prompt = buildSubAgentEventPrompt([
-      {
-        description: 'Say "hi" <now>',
-        result: 'line 1\n\nline 2 ]]> end',
-        status: 'completed',
-        subAgentId: 'thread-1',
-      },
-    ]);
-
-    expect(prompt.startsWith(`<${SUB_AGENT_EVENT_TAG} count="1">`)).toBe(true);
-    expect(prompt.endsWith(`</${SUB_AGENT_EVENT_TAG}>`)).toBe(true);
-    expect(prompt).not.toMatch(/\n\s*\n/);
-    expect(prompt).toContain('description="Say &quot;hi&quot; &lt;now&gt;"');
-    expect(prompt).toContain(']]]]><![CDATA[>');
-    expect(prompt).toContain('<instruction>');
   });
 });

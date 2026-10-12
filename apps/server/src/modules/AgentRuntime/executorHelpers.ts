@@ -298,9 +298,14 @@ export const buildServerVirtualSubAgentRunner = (
       //    tool-message shape in call_tool) that anchors the isolation thread
       //    and renders a loading state until the bridge backfills it.
       // `background` is written before the child starts so the completion bridge
-      // can never see this row without it, however fast the child finishes.
+      // can never see this row without it, however fast the child finishes. The
+      // sender is who the answer will be delivered as: the named target, or the
+      // parent itself for an anonymous clone.
       const pendingState = {
-        ...(background && { background: true }),
+        ...(background && {
+          background: true,
+          sender: { agentId: targetAgentId ?? agentId, name: description },
+        }),
         status: 'pending',
         ...(subAgentId && { threadId: subAgentId }),
       };
@@ -339,9 +344,8 @@ export const buildServerVirtualSubAgentRunner = (
         parentMessageId: placeholder.id,
         parentOperationId: ctx.operationId,
         provider: subAgentModel?.provider,
-        // A named `callAgent` target is an agent conversation of its own, not a
-        // sub-agent of the parent.
-        sourceToolCallId: targetAgentId ? undefined : chatToolPayload.id,
+        // Marks the thread as a sub-agent (the right panel, the thread portal).
+        sourceToolCallId: chatToolPayload.id,
         threadId: subAgentId,
         timeout,
         title: description,

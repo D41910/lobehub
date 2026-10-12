@@ -15,7 +15,7 @@ const messageModel = new MessageModel(serverDB, userId);
 
 const identifier = 'lobe-agent';
 const apiName = 'callSubAgent';
-const query = { apiName, identifier, topicId: 'bsa-topic' };
+const query = { topicId: 'bsa-topic' };
 
 const seedCall = async (opts: {
   apiName?: string;
@@ -107,11 +107,16 @@ describe('MessageModel background sub-agent calls', () => {
       expect(rows[0].state).toMatchObject({ status: 'completed', threadId: 'thd-1' });
     });
 
-    it('stays within the topic, the API and the owner', async () => {
+    it('covers every background call of the topic and owner, whichever tool made it', async () => {
       const state = { background: true, status: 'completed' };
-      await seedCall({ id: 'mine', state });
+      await seedCall({ createdAt: new Date('2026-10-01T00:00:01Z'), id: 'mine', state });
+      await seedCall({
+        apiName: 'callAgent',
+        createdAt: new Date('2026-10-01T00:00:02Z'),
+        id: 'call-agent',
+        state,
+      });
       await seedCall({ id: 'other-topic', state, topicId: 'bsa-topic2' });
-      await seedCall({ apiName: 'callAgent', id: 'other-api', state });
       await seedCall({ id: 'other-user', ownerId: otherUserId, state, topicId: 'bsa-other-topic' });
 
       const rows = await messageModel.listBackgroundSubAgentCalls({
@@ -119,7 +124,7 @@ describe('MessageModel background sub-agent calls', () => {
         scope: 'undelivered',
       });
 
-      expect(rows.map((row) => row.id)).toEqual(['mine']);
+      expect(rows.map((row) => row.id)).toEqual(['mine', 'call-agent']);
     });
   });
 

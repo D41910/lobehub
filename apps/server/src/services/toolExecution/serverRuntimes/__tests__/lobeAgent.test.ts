@@ -119,7 +119,8 @@ vi.mock('../lobeAgentPlan', () => ({
   }),
 }));
 
-const { lobeAgentRuntime, MAX_RUNNING_BACKGROUND_SUB_AGENTS } = await import('../lobeAgent');
+const { lobeAgentRuntime } = await import('../lobeAgent');
+const { MAX_RUNNING_BACKGROUND_SUB_AGENTS } = await import('../backgroundSubAgent');
 
 describe('lobeAgentRuntime', () => {
   const baseContext: ToolExecutionContext = {
@@ -1028,7 +1029,7 @@ describe('lobeAgentRuntime', () => {
         expect(run).toHaveBeenCalledWith(expect.objectContaining({ background: true }));
         expect(result.deferred).toBeUndefined();
         expect(result).toMatchObject({ success: true, toolMessageId: 'placeholder-1' });
-        expect(result.content).toContain('started in the background');
+        expect(result.content).toContain('Started in the background');
         expect(result.content).toMatch(/<sub_agent id="thread-1" \/>$/);
       });
 

@@ -4418,8 +4418,9 @@ export class MessageModel {
   };
 
   /**
-   * Background sub-agent calls in a topic — tool rows of the given API whose
-   * `state.background` is set (`callSubAgent({ runInBackground })`).
+   * Background sub-agent calls in a topic — tool rows whose `state.background`
+   * is set (`callSubAgent` / `callAgent` with `runInBackground`; only their
+   * runner writes the flag).
    *
    * - `running`: the sub-agent has not reported back yet (`state.status` is
    *   `pending`). Used to cap how many run at once.
@@ -4427,8 +4428,6 @@ export class MessageModel {
    *   been handed to the parent yet (`state.deliveredAt` unset), oldest first.
    */
   listBackgroundSubAgentCalls = async (params: {
-    apiName: string;
-    identifier: string;
     scope: 'running' | 'undelivered';
     topicId: string;
   }): Promise<
@@ -4461,8 +4460,6 @@ export class MessageModel {
       .where(
         and(
           eq(messages.topicId, params.topicId),
-          eq(messagePlugins.identifier, params.identifier),
-          eq(messagePlugins.apiName, params.apiName),
           sql`(${messagePlugins.state}->>'background')::boolean is true`,
           statusCondition,
           this.ownership(),

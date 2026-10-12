@@ -17,6 +17,7 @@ import { getWorkingDirEffectivePath, RequestTrigger } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
+import { sql } from 'drizzle-orm';
 
 import {
   deriveAgentInterventionContinuationMessageId,
@@ -60,7 +61,11 @@ import { ComposioService } from '@/server/services/composio';
 import { MarketService } from '@/server/services/market';
 import { markdownToTxt } from '@/utils/markdownToTxt';
 
-import { deliverBackgroundSubAgentResults } from './backgroundSubAgentDelivery';
+import {
+  type BackgroundSubAgentResult,
+  deliverBackgroundSubAgentResults,
+} from './backgroundSubAgentDelivery';
+import { resolveForegroundInterventionConfig } from './foregroundIntervention';
 import { createGraphAwareAgentFactory } from './helpers/agentFactory';
 import {
   createGroupActionMemberBridgeHook,
@@ -1744,12 +1749,62 @@ export class AiAgentService {
     deliverBackgroundSubAgentResults(
       {
         agentOperationModel: this.agentOperationModel,
+        appendResultMessages: this.appendBackgroundResultMessages,
         execAgent: (execParams) => this.execAgent(execParams),
         messageModel: this.messageModel,
+        resolveInterventionConfig: () => resolveForegroundInterventionConfig(this.db, this.userId),
         topicModel: this.topicModel,
       },
       params,
     );
+
+  /**
+   * Land background sub-agent answers on the topic's main line as
+   * `role='taskCallback'` messages from each sub-agent. Serialized per topic
+   * (with task callbacks too) so concurrent deliveries cannot anchor on the
+   * same leaf and fork the line; ids derive from the call, so a retried
+   * delivery skips what it already wrote. Returns the line's new leaf.
+   */
+  private appendBackgroundResultMessages = async (params: {
+    agentId: string;
+    results: BackgroundSubAgentResult[];
+    topicId: string;
+  }): Promise<string | undefined> => {
+    const { agentId, results, topicId } = params;
+
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${topicId}))`);
+      const messageModel = new MessageModel(tx, this.userId, this.workspaceId);
+      let leafId = await messageModel.getLastMainThreadSpineMessageId(topicId);
+
+      for (const item of results) {
+        const messageId = `subagent-cb-${item.callId}`;
+        if (await messageModel.findById(messageId)) continue;
+
+        await messageModel.create(
+          {
+            agentId,
+            content: item.result,
+            metadata: {
+              subAgentCallback: {
+                agentId: item.sender.agentId,
+                name: item.sender.name,
+                status: item.status,
+                threadId: item.threadId,
+              },
+            },
+            parentId: leafId,
+            role: 'taskCallback',
+            topicId,
+          },
+          messageId,
+        );
+        leafId = messageId;
+      }
+
+      return leafId;
+    });
+  };
 
   /**
    * An approval continuation retires the parked member op, which silently

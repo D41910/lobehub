@@ -13,7 +13,6 @@ import {
   createUrlMediaFileItems,
   formatMediaUrlValidationError,
   hasAnalyzableMediaFiles,
-  LobeAgentApiName,
   LobeAgentIdentifier,
   normalizeAnalyzeMediaInput,
   selectMediaFileItems,
@@ -42,15 +41,10 @@ import {
 } from '@/server/services/vent';
 
 import type { ToolExecutionContext } from '../types';
+import { checkBackgroundSubAgentAllowed } from './backgroundSubAgent';
 import { normalizeMultimodalImageItems } from './lobeAgentImage';
 import { createServerPlanRuntimeService } from './lobeAgentPlan';
 import type { ServerRuntimeRegistration } from './types';
-
-/**
- * Background sub-agents one conversation may have running at once. Nobody waits
- * on them, so without a ceiling a looping parent could fan out unbounded spend.
- */
-export const MAX_RUNNING_BACKGROUND_SUB_AGENTS = 5;
 
 // The durable record of a vent is the persisted vent tool-call message itself.
 // This shared service only validates input, assigns a stable id, and enforces
@@ -288,8 +282,16 @@ class LobeAgentExecutionRuntime {
     const background = params.runInBackground === true;
 
     if (background) {
-      const refusal = await this.checkBackgroundSubAgentAllowed();
-      if (refusal) return refusal;
+      const refusal = await checkBackgroundSubAgentAllowed({
+        db: this.db,
+        groupId: this.groupId,
+        retryHint: 'Call callSubAgent again without runInBackground to wait for the result.',
+        threadId: this.threadId,
+        topicId: this.topicId,
+        userId: this.userId,
+        workspaceId: this.workspaceId,
+      });
+      if (refusal) return buildError(refusal.message, refusal.code);
     }
 
     const { started, error, threadId, subOperationId, toolMessageId } = await ctx.subAgent.run({
@@ -332,46 +334,6 @@ class LobeAgentExecutionRuntime {
       state: { status: 'pending', subOperationId, threadId, toolMessageId },
       success: true,
     };
-  };
-
-  /**
-   * Why a background sub-agent cannot start here, as a tool error; `undefined`
-   * when it can. The answer is delivered as a new turn of this topic's agent,
-   * which a group conversation (several agents, one supervisor) has no single
-   * owner for.
-   */
-  private checkBackgroundSubAgentAllowed = async (): Promise<
-    BuiltinServerRuntimeOutput | undefined
-  > => {
-    if (this.groupId) {
-      return buildError(
-        'Background sub-agents are not supported in group conversations. Call callSubAgent again without runInBackground to wait for the result.',
-        'BACKGROUND_SUB_AGENT_UNSUPPORTED',
-      );
-    }
-    if (!this.topicId) {
-      return buildError(
-        'Background sub-agents need a conversation to report back to. Call callSubAgent again without runInBackground.',
-        'BACKGROUND_SUB_AGENT_UNSUPPORTED',
-      );
-    }
-
-    const running = await new MessageModel(
-      this.db,
-      this.userId,
-      this.workspaceId,
-    ).listBackgroundSubAgentCalls({
-      apiName: LobeAgentApiName.callSubAgent,
-      identifier: LobeAgentIdentifier,
-      scope: 'running',
-      topicId: this.topicId,
-    });
-    if (running.length >= MAX_RUNNING_BACKGROUND_SUB_AGENTS) {
-      return buildError(
-        `${running.length} background sub-agents are already running in this conversation (limit ${MAX_RUNNING_BACKGROUND_SUB_AGENTS}). Wait for their results to arrive, or call callSubAgent without runInBackground.`,
-        'BACKGROUND_SUB_AGENT_LIMIT',
-      );
-    }
   };
 
   // ==================== Vent ====================

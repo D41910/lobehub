@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/store/chat';
 
 import { dataSelectors, useConversationStore } from '../../store';
+import SubAgentCallbackMessage from './SubAgentCallback';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   card: css`
@@ -62,6 +63,20 @@ const TaskCallbackMessage = memo<TaskCallbackMessageProps>(({ id }) => {
   // navigating away from the conversation to the full task page.
   const openTaskDetail = useChatStore((s) => s.openTaskDetail);
   const item = useConversationStore(dataSelectors.getDisplayMessageById(id), isEqual);
+
+  // The same role carries a background sub-agent's answer, which reads as a
+  // message from that sub-agent rather than a task card.
+  const subAgentCallback = item?.metadata?.subAgentCallback;
+  if (subAgentCallback) {
+    return (
+      <SubAgentCallbackMessage
+        callback={subAgentCallback}
+        content={typeof item?.content === 'string' ? item.content : ''}
+        createdAt={item?.createdAt}
+        id={id}
+      />
+    );
+  }
 
   const callback = item?.metadata?.taskCallback;
   if (!callback) return null;

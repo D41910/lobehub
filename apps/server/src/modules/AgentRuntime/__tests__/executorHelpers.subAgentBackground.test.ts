@@ -63,7 +63,13 @@ describe('buildServerVirtualSubAgentRunner in background mode', () => {
 
     expect(calls).toEqual(['create', 'exec']);
     expect(messageModel.create).toHaveBeenCalledWith(
-      expect.objectContaining({ pluginState: { background: true, status: 'pending' } }),
+      expect.objectContaining({
+        pluginState: {
+          background: true,
+          sender: { agentId: 'agent-1', name: 'research' },
+          status: 'pending',
+        },
+      }),
     );
     expect(execVirtualSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ background: true, parentMessageId: 'placeholder-1' }),
@@ -106,12 +112,12 @@ describe('buildServerVirtualSubAgentRunner in background mode', () => {
   });
 
   // The right panel and the thread portal tell a sub-agent from an ordinary
-  // thread by the tool call that spawned it.
-  it('records the spawning tool call for a callSubAgent sub-agent only', async () => {
+  // thread by the tool call that spawned it — a named callAgent target included.
+  it('records the spawning tool call on the sub-agent thread', async () => {
     const { execVirtualSubAgent, runner } = buildRunner();
 
     await runner.run({ description: 'research', instruction: 'go' });
-    await runner.run({ agentId: 'named-agent', description: 'ask', instruction: 'go' });
+    await runner.run({ agentId: 'named-agent', description: 'Poet', instruction: 'go' });
 
     expect(execVirtualSubAgent).toHaveBeenNthCalledWith(
       1,
@@ -119,7 +125,25 @@ describe('buildServerVirtualSubAgentRunner in background mode', () => {
     );
     expect(execVirtualSubAgent).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ sourceToolCallId: undefined }),
+      expect.objectContaining({ sourceToolCallId: 'tool-call-1' }),
+    );
+  });
+
+  // The answer is delivered as a message from whoever answered.
+  it('records a named callAgent target as the sender', async () => {
+    const { messageModel, runner } = buildRunner();
+
+    await runner.run({
+      agentId: 'named-agent',
+      background: true,
+      description: 'Poet',
+      instruction: 'go',
+    });
+
+    expect(messageModel.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginState: expect.objectContaining({ sender: { agentId: 'named-agent', name: 'Poet' } }),
+      }),
     );
   });
 });

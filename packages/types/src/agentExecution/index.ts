@@ -642,9 +642,9 @@ export interface ExecVirtualSubAgentParams {
   /** Provider for {@link model}. */
   provider?: string;
   /**
-   * The `callSubAgent` tool call that spawned this sub-agent, stored on a new
-   * thread's metadata so the UI shows the thread as a sub-agent. A continued
-   * thread keeps the call that first spawned it.
+   * The tool call (`callSubAgent` / `callAgent`) that spawned this sub-agent,
+   * stored on a new thread's metadata so the UI shows the thread as a
+   * sub-agent. A continued thread keeps the call that first spawned it.
    */
   sourceToolCallId?: string;
   /**

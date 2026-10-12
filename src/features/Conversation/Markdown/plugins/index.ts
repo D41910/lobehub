@@ -11,7 +11,6 @@ import Mention from './Mention';
 import ReferTopic from './ReferTopic';
 import ScmEvent from './ScmEvent';
 import Skill from './Skill';
-import SubAgentEvent from './SubAgentEvent';
 import Task from './Task';
 import Thinking from './Thinking';
 import Tool from './Tool';
@@ -32,7 +31,6 @@ export const markdownElements: MarkdownElement[] = [
   Task,
   ScmEvent,
   GoalTurn,
-  SubAgentEvent,
   UserFeedback,
   ImageSearchRef,
   LobeAgents,

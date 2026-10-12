@@ -1,6 +1,4 @@
-import { LobeAgentApiName, LobeAgentIdentifier } from '@lobechat/builtin-tool-lobe-agent';
-import { SUB_AGENT_EVENT_TAG } from '@lobechat/const';
-import type { ExecAgentResult } from '@lobechat/types';
+import type { ExecAgentResult, UserInterventionConfig } from '@lobechat/types';
 import { isAgentOperationInFlight, RequestTrigger } from '@lobechat/types';
 import debug from 'debug';
 
@@ -13,21 +11,46 @@ import type { InternalExecAgentParams } from './types';
 const log = debug('lobe-server:ai-agent:background-sub-agent');
 
 /**
- * Background sub-agents (`callSubAgent({ runInBackground: true })`) report to a
- * parent that did not wait for them. A finished one stores its answer on its
- * placeholder (see `AgentRuntimeService.completeSubAgentBridge`); this module
- * hands those answers to the parent agent as one new turn of the topic.
+ * Background sub-agents (`callSubAgent` / `callAgent` with `runInBackground`)
+ * report to a parent that did not wait for them. A finished one stores its
+ * answer on its placeholder (see `AgentRuntimeService.completeSubAgentBridge`);
+ * this module hands those answers back to the conversation.
+ *
+ * Each answer lands on the conversation's main line as a `role='taskCallback'`
+ * message from the sub-agent (`metadata.subAgentCallback`), the same shape a
+ * finished task reports back with, and the parent agent then runs off that
+ * history without a made-up user turn.
  *
  * It runs when a background sub-agent finishes and whenever a run of the topic
  * settles, so an answer that arrives mid-turn is delivered once that turn ends
  * — the parent is never interrupted, and never waits on a result it chose not
- * to wait for. Each answer is claimed before its turn starts, so the two
+ * to wait for. Each answer is claimed before it is delivered, so the two
  * triggers racing cannot deliver it twice; a turn that fails to start hands
- * its claims back for the next settle.
+ * its claims back for the next settle, and the callback rows' ids are derived
+ * from the call so a retry does not repeat them.
  */
+
+export interface BackgroundSubAgentResult {
+  /** The background call's placeholder tool message. */
+  callId: string;
+  result: string;
+  sender: { agentId?: string; name: string };
+  status: 'completed' | 'error';
+  /** The sub-agent's isolation thread. */
+  threadId: string;
+}
 
 export interface BackgroundSubAgentDeliveryDeps {
   agentOperationModel: Pick<AgentOperationModel, 'findById'>;
+  /**
+   * Append one callback message per result to the topic's main line, in order,
+   * skipping any that already exist; returns the id of the line's last message.
+   */
+  appendResultMessages: (params: {
+    agentId: string;
+    results: BackgroundSubAgentResult[];
+    topicId: string;
+  }) => Promise<string | undefined>;
   execAgent: (params: InternalExecAgentParams) => Promise<ExecAgentResult>;
   messageModel: Pick<
     MessageModel,
@@ -35,85 +58,28 @@ export interface BackgroundSubAgentDeliveryDeps {
     | 'listBackgroundSubAgentCalls'
     | 'releaseBackgroundSubAgentDelivery'
   >;
+  /** Approval policy for the wake-up run — the user's foreground preferences. */
+  resolveInterventionConfig: () => Promise<UserInterventionConfig>;
   topicModel: Pick<TopicModel, 'findById'>;
 }
-
-export interface BackgroundSubAgentResult {
-  description?: string;
-  result: string;
-  status: 'completed' | 'error';
-  subAgentId: string;
-}
-
-// ---------- wake prompt ----------
-
-const escapeAttribute = (value: string) =>
-  value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-
-// The block must stay one CommonMark HTML block so the client renders it as a
-// card, and CommonMark ends such a block at the first blank line.
-const withoutBlankLines = (text: string) =>
-  text
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .join('\n');
-
-const cdata = (text: string) =>
-  `<![CDATA[\n${withoutBlankLines(text).replaceAll(']]>', ']]]]><![CDATA[>')}\n]]>`;
-
-const INSTRUCTION =
-  'Background sub-agents you started earlier have finished; their results are above. This message comes from the system, not from the user, and the user has not seen these results yet. Use them to carry on with what the user asked for and reply to the user. To follow up with a sub-agent, pass its id as callSubAgent subAgentId.';
-
-/**
- * The message that wakes the parent: one `<subAgentEvent>` block with a
- * `<result>` per finished sub-agent. The model reads it as structured context;
- * the client renders it as a card ({@link SUB_AGENT_EVENT_TAG} markdown plugin).
- */
-export const buildSubAgentEventPrompt = (results: BackgroundSubAgentResult[]): string => {
-  const lines = [`<${SUB_AGENT_EVENT_TAG} count="${results.length}">`];
-  for (const item of results) {
-    const attributes = [
-      `id="${escapeAttribute(item.subAgentId)}"`,
-      `status="${item.status}"`,
-      item.description ? `description="${escapeAttribute(item.description)}"` : undefined,
-    ]
-      .filter(Boolean)
-      .join(' ');
-    lines.push(`<result ${attributes}>${cdata(item.result)}</result>`);
-  }
-  lines.push(`<instruction>\n${INSTRUCTION}\n</instruction>`, `</${SUB_AGENT_EVENT_TAG}>`);
-  return lines.join('\n');
-};
-
-// ---------- delivery ----------
 
 type PendingCall = Awaited<
   ReturnType<BackgroundSubAgentDeliveryDeps['messageModel']['listBackgroundSubAgentCalls']>
 >[number];
 
-const readDescription = (rawArguments: string | null): string | undefined => {
-  if (!rawArguments) return undefined;
-  try {
-    const description = (JSON.parse(rawArguments) as { description?: unknown }).description;
-    return typeof description === 'string' && description.trim() ? description.trim() : undefined;
-  } catch {
-    return undefined;
-  }
+const toResult = (call: PendingCall): BackgroundSubAgentResult => {
+  const sender = call.state.sender as { agentId?: string; name?: string } | undefined;
+  return {
+    callId: call.id,
+    result:
+      typeof call.state.result === 'string' && call.state.result
+        ? call.state.result
+        : 'Finished without a textual answer.',
+    sender: { agentId: sender?.agentId, name: sender?.name ?? '' },
+    status: call.state.status === 'error' ? 'error' : 'completed',
+    threadId: typeof call.state.threadId === 'string' ? call.state.threadId : '',
+  };
 };
-
-const toResult = (call: PendingCall): BackgroundSubAgentResult => ({
-  description: readDescription(call.arguments),
-  result:
-    typeof call.state.result === 'string' && call.state.result
-      ? call.state.result
-      : 'Sub-agent finished without a textual answer.',
-  status: call.state.status === 'error' ? 'error' : 'completed',
-  subAgentId: typeof call.state.threadId === 'string' ? call.state.threadId : '',
-});
 
 /**
  * Whether another run still holds the topic. `settledOperationId` is the run
@@ -133,48 +99,6 @@ const isTopicBusy = async (
 };
 
 /**
- * Wake one parent conversation branch with its finished results. They go out
- * together: one turn reads them all, instead of one turn per sub-agent racing
- * for the same topic.
- */
-const wakeParent = async (
-  deps: BackgroundSubAgentDeliveryDeps,
-  params: { agentId: string; calls: PendingCall[]; threadId: string | null; topicId: string },
-): Promise<void> => {
-  const { agentId, calls, threadId, topicId } = params;
-  const claimed = new Set(
-    await deps.messageModel.claimBackgroundSubAgentDelivery(
-      calls.map((call) => call.id),
-      new Date().toISOString(),
-    ),
-  );
-  const results = calls.filter((call) => claimed.has(call.id)).map(toResult);
-  if (results.length === 0) return;
-
-  try {
-    const started = await deps.execAgent({
-      agentId,
-      appContext: { threadId, topicId },
-      autoStart: true,
-      externalOrigin: {
-        kind: 'sub_agent_results',
-        label: results.map((item) => item.description ?? item.subAgentId).join(', '),
-        provider: 'lobehub',
-        resourceId: results[0].subAgentId,
-      },
-      prompt: buildSubAgentEventPrompt(results),
-      trigger: RequestTrigger.Chat,
-    });
-    if (!started.success) throw new Error(started.error ?? 'the turn did not start');
-
-    log('woke agent %s in topic %s with %d result(s)', agentId, topicId, results.length);
-  } catch (error) {
-    log('waking agent %s in topic %s failed, results kept: %O', agentId, topicId, error);
-    await deps.messageModel.releaseBackgroundSubAgentDelivery([...claimed]);
-  }
-};
-
-/**
  * Deliver the topic's finished background sub-agent results, unless another
  * run still holds the topic — its own completion calls this again. Never
  * throws: an undelivered result stays stored for the next attempt.
@@ -187,30 +111,48 @@ export const deliverBackgroundSubAgentResults = async (
 
   try {
     const topic = await deps.topicModel.findById(topicId);
-    if (!topic) return;
+    if (!topic?.agentId) return;
     if (await isTopicBusy(deps, topic.metadata?.runningOperation, settledOperationId)) {
       log('topic %s is busy; results wait for its run to settle', topicId);
       return;
     }
 
-    const pending = await deps.messageModel.listBackgroundSubAgentCalls({
-      apiName: LobeAgentApiName.callSubAgent,
-      identifier: LobeAgentIdentifier,
-      scope: 'undelivered',
-      topicId,
-    });
+    // Background calls only start from the main line (see
+    // `checkBackgroundSubAgentAllowed`), which is where they report back.
+    const pending = (
+      await deps.messageModel.listBackgroundSubAgentCalls({ scope: 'undelivered', topicId })
+    ).filter((call) => !call.threadId);
     if (pending.length === 0) return;
 
-    // One branch per wake, oldest first. The wake holds the topic, so a second
-    // branch could not start beside it anyway; it goes out when this one settles.
-    const [oldest] = pending;
-    const agentId = oldest.agentId ?? topic.agentId;
-    if (!agentId) return;
-    const calls = pending.filter(
-      (call) => (call.agentId ?? topic.agentId) === agentId && call.threadId === oldest.threadId,
+    const claimed = new Set(
+      await deps.messageModel.claimBackgroundSubAgentDelivery(
+        pending.map((call) => call.id),
+        new Date().toISOString(),
+      ),
     );
+    const results = pending.filter((call) => claimed.has(call.id)).map(toResult);
+    if (results.length === 0) return;
 
-    await wakeParent(deps, { agentId, calls, threadId: oldest.threadId, topicId });
+    const agentId = topic.agentId;
+    try {
+      const parentMessageId = await deps.appendResultMessages({ agentId, results, topicId });
+      const started = await deps.execAgent({
+        agentId,
+        appContext: { topicId },
+        autoStart: true,
+        parentMessageId,
+        prompt: `Process ${results.length} finished background result${results.length === 1 ? '' : 's'}`,
+        suppressUserMessage: true,
+        trigger: RequestTrigger.Chat,
+        userInterventionConfig: await deps.resolveInterventionConfig(),
+      });
+      if (!started.success) throw new Error(started.error ?? 'the turn did not start');
+
+      log('woke agent %s in topic %s with %d result(s)', agentId, topicId, results.length);
+    } catch (error) {
+      log('waking agent %s in topic %s failed, results kept: %O', agentId, topicId, error);
+      await deps.messageModel.releaseBackgroundSubAgentDelivery([...claimed]);
+    }
   } catch (error) {
     log('delivering background results for topic %s failed: %O', topicId, error);
   }

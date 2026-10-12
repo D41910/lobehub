@@ -211,6 +211,11 @@ export interface CallSubAgentState extends SubAgentRunStats {
    * — the tool result itself stays the start receipt the parent already read.
    */
   result?: string;
+  /**
+   * Who a background run's answer is delivered as: the named `callAgent`
+   * target, or the parent itself (with the call's description) for a clone.
+   */
+  sender?: { agentId: string; name: string };
   status?: 'pending' | 'completed' | 'error';
   threadId: string;
 }

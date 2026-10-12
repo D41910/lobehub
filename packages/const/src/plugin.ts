@@ -34,8 +34,6 @@ export const TASK_TAG = 'task';
 export const SCM_EVENT_TAG = 'scmEvent';
 /** One goal manager planning turn: why it started, what changed since the last one, and the standing contract. */
 export const GOAL_TURN_TAG = 'goalTurn';
-/** Wake-up block carrying the results of background sub-agents to their parent. */
-export const SUB_AGENT_EVENT_TAG = 'subAgentEvent';
 export const TOOL_TAG = 'tool';
 export const USER_FEEDBACK_TAG = 'user_feedback';
 // https://regex101.com/r/TwzTkf/2

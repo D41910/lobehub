@@ -4488,10 +4488,13 @@ export class AgentRuntimeService {
     );
   }
 
-  /** Whether the bridged placeholder was started with `runInBackground`. */
+  /**
+   * Whether the bridged placeholder was started with `runInBackground`
+   * (`callSubAgent` or `callAgent` — only their runner writes the flag).
+   */
   private async isBackgroundSubAgentPlaceholder(toolMessageId: string): Promise<boolean> {
     const plugin = await this.messageModel.findMessagePlugin(toolMessageId);
-    return isCallSubAgentCall(plugin) && (plugin?.state as CallSubAgentState)?.background === true;
+    return (plugin?.state as CallSubAgentState | undefined)?.background === true;
   }
 
   /**
