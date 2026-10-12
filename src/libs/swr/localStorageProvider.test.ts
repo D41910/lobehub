@@ -292,6 +292,30 @@ describe('createCacheProvider — tiering', () => {
     await new Promise((r) => setTimeout(r, 20));
   });
 
+  // Regression guard for unbounded device payloads (review summaries, PR
+  // activity): an entry over its ceiling must stay memory-only, and must also
+  // evict the earlier row so a reload doesn't hydrate an outdated value.
+  it('keeps idb entries over their byte ceiling memory-only and drops the stale row', async () => {
+    const scope = { value: 's1' };
+    const { provider } = buildProvider(scope, { idbMaxEntryBytes: { 'MSGS:big': 64 } });
+    await provider.hydrateScope?.();
+    const map = provider();
+
+    map.set('MSGS:big', { data: 'small' });
+    map.set('MSGS:other', { data: 'x'.repeat(200) });
+    await until(async () => (await localDataCache.entriesByScope('s1')).length === 2);
+
+    map.set('MSGS:big', { data: 'x'.repeat(200) });
+    await until(async () => (await localDataCache.entriesByScope('s1')).length === 1);
+
+    expect(map.get('MSGS:big')).toEqual({ data: 'x'.repeat(200) });
+    const { provider: restored } = buildProvider(scope, { idbMaxEntryBytes: { 'MSGS:big': 64 } });
+    await restored.hydrateScope?.();
+    expect(restored().get('MSGS:big')).toBeUndefined();
+    // Unlimited keys are unaffected by another key's ceiling.
+    expect(restored().get('MSGS:other')).toEqual({ data: 'x'.repeat(200) });
+  });
+
   it('exposes the central tier config keyed by domain prefix', () => {
     expect(CACHE_TIERS.idb).toContain('message:');
     expect(CACHE_TIERS.idb).toContain('topic:');

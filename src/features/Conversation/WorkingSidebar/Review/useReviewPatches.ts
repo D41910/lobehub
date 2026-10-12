@@ -6,4 +6,6 @@ export {
   type ReviewPatchesData,
   useGitRemoteBranches,
   useReviewPatches,
+  useReviewPatchesSummary,
+  useStaleFirstReviewPatches,
 } from '@/store/device';

@@ -445,7 +445,10 @@ export const serverConfigKeys = {
 // NOTE: discover/eval/ragEval/knowledgeBase/device/userMemory/file prefixes
 // are deliberately kept OUT of `CACHE_TIERS`
 // (see localStorageProvider.ts) so this key-convergence introduces no new
-// persistence — they stay memory-only exactly as before.
+// persistence — they stay memory-only exactly as before. Exception: the Review
+// summary and PR tab reads (`device:gitReviewSummary` / `gitLinkedPR` /
+// `gitPullRequest*`) are persisted per device + path so those tabs paint
+// stale-first; see `CACHE_TIERS`.
 export const discoverKeys = {
   // -- marketplace detail "related agents" lists (UI) --
   mcpAgents: def('discover:mcpAgents', (identifier: string, page: number) => [
@@ -592,6 +595,20 @@ export const deviceKeys = {
     'device:gitReviewPatches',
     (deviceId: string, dirPath: string, mode: string, baseRef: string) => [
       'device:gitReviewPatches',
+      deviceId,
+      dirPath,
+      mode,
+      baseRef,
+    ],
+  ),
+  /**
+   * Persisted path + line-count summary of `gitReviewPatches` (no diff text),
+   * so the Review tab can list files on first paint after a reload.
+   */
+  gitReviewSummary: def(
+    'device:gitReviewSummary',
+    (deviceId: string, dirPath: string, mode: string, baseRef: string) => [
+      'device:gitReviewSummary',
       deviceId,
       dirPath,
       mode,

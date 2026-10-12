@@ -33,7 +33,43 @@ export interface ReviewPatchesData {
    * submodules (unstaged) or no submodule pointer differences (branch).
    */
   submodules?: SubmoduleWorkingTreePatches[];
+  /**
+   * Set on the persisted summary (see `toReviewPatchesSummary`): paths and
+   * line counts are real, but every `patch` body is empty until the live read
+   * lands.
+   */
+  summaryOnly?: boolean;
 }
+
+const summarizePatch = ({
+  additions,
+  deletions,
+  filePath,
+  isBinary,
+  status,
+  truncated,
+}: GitWorkingTreePatch): GitWorkingTreePatch => ({
+  additions,
+  deletions,
+  filePath,
+  isBinary,
+  patch: '',
+  status,
+  truncated,
+});
+
+/**
+ * The persistable shape of a review read: file paths, statuses and +/- counts
+ * without diff text, which can run to megabytes and is cheap to re-read.
+ */
+export const toReviewPatchesSummary = (data: ReviewPatchesData): ReviewPatchesData => ({
+  baseRef: data.baseRef,
+  headRef: data.headRef,
+  mode: data.mode,
+  patches: data.patches.map(summarizePatch),
+  submodules: data.submodules?.map((sub) => ({ ...sub, patches: sub.patches.map(summarizePatch) })),
+  summaryOnly: true,
+});
 
 /**
  * Git read hooks for a working directory, transport-agnostic: the fetcher goes
@@ -88,6 +124,14 @@ export const getGitReviewPatchesKey = ({
 }: GitReviewCacheParams) =>
   dirPath ? deviceKeys.gitReviewPatches(deviceId ?? 'local', dirPath, mode, baseRef ?? '') : null;
 
+export const getGitReviewSummaryKey = ({
+  baseRef,
+  deviceId,
+  dirPath,
+  mode,
+}: GitReviewCacheParams) =>
+  dirPath ? deviceKeys.gitReviewSummary(deviceId ?? 'local', dirPath, mode, baseRef ?? '') : null;
+
 export const invalidateGitReviewCaches = async ({
   baseRef,
   deviceId,
@@ -117,10 +161,20 @@ export const useReviewPatches = (
 
   return useClientDataSWR<ReviewPatchesData>(
     key,
-    () =>
-      mode === 'branch'
-        ? fetchBranchReviewPatches(dirPath!, baseRef, deviceId)
-        : fetchUnstagedReviewPatches(dirPath!, deviceId),
+    async () => {
+      const data =
+        mode === 'branch'
+          ? await fetchBranchReviewPatches(dirPath!, baseRef, deviceId)
+          : await fetchUnstagedReviewPatches(dirPath!, deviceId);
+      // Every live read refreshes the persisted summary the Review tab paints
+      // from on the next cold start.
+      void mutate(
+        getGitReviewSummaryKey({ baseRef, deviceId, dirPath, mode }),
+        toReviewPatchesSummary(data),
+        { revalidate: false },
+      );
+      return data;
+    },
     {
       focusThrottleInterval: mode === 'branch' ? 30 * 1000 : 5 * 1000,
       refreshInterval: getReviewRefreshInterval(mode, active),
@@ -130,6 +184,49 @@ export const useReviewPatches = (
       shouldRetryOnError: false,
     },
   );
+};
+
+/**
+ * Last persisted review summary (paths + line counts, no diff text) for the
+ * same device / directory / mode / base. Cache-only: never fetches; written by
+ * `useReviewPatches` after each live read.
+ */
+export const useReviewPatchesSummary = (
+  dirPath: string | undefined,
+  mode: ReviewMode,
+  baseRef?: string,
+  deviceId?: string,
+  active = true,
+) =>
+  useClientDataSWR<ReviewPatchesData>(
+    active && isEnabled(deviceId, dirPath)
+      ? getGitReviewSummaryKey({ baseRef, deviceId, dirPath, mode })
+      : null,
+    null,
+    { revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
+
+/**
+ * Review data stale-first: the live read when it has landed, otherwise the
+ * persisted summary, so a reload lists files immediately instead of spinning.
+ * `diffPending` stays true until the live read (with diff text) arrives.
+ */
+export const useStaleFirstReviewPatches = (
+  dirPath: string | undefined,
+  mode: ReviewMode,
+  baseRef?: string,
+  deviceId?: string,
+  active = true,
+) => {
+  const live = useReviewPatches(dirPath, mode, baseRef, deviceId, active);
+  const { data: summary } = useReviewPatchesSummary(dirPath, mode, baseRef, deviceId, active);
+
+  return {
+    data: live.data ?? summary,
+    diffPending: !live.data,
+    isLoading: live.isLoading,
+    isValidating: live.isValidating,
+  };
 };
 
 /**
