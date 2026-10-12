@@ -9,11 +9,11 @@ import type {
   DeviceGitWorkingTreeStatus,
   DeviceGitWorktreeListItem,
 } from '@lobechat/types';
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 
 import { mutate, useClientDataSWR } from '@/libs/swr';
 import { deviceKeys, localFileKeys } from '@/libs/swr/keys';
-import { type GitBranchSummary, gitService } from '@/services/git';
+import { type GitBranchSummary, type GitLinkedPRSummary, gitService } from '@/services/git';
 
 import {
   gitLinkedPRKey,
@@ -26,7 +26,7 @@ import {
   type ReviewMode,
   type ReviewPatchesData,
 } from './gitReview/projection';
-import { type GitReviewStore, useGitReviewStore } from './gitReview/store';
+import { type GitReviewStore, useGitReviewStore, warmPullRequestReplicas } from './gitReview/store';
 
 export type { ReviewMode, ReviewPatchesData } from './gitReview/projection';
 export { toReviewPatchesSummary } from './gitReview/projection';
@@ -93,10 +93,15 @@ export interface GitReplicaReadResult<T> {
   mutate: () => Promise<unknown>;
 }
 
-interface ReplicaReadSlice<TParams> {
+type GitReplicaSyncOptions<TStored> = ReplicaSyncSchedule & {
+  onHydrated?: (data: TStored) => void;
+  onSuccess?: (data: TStored) => void;
+};
+
+interface ReplicaReadSlice<TParams, TStored> {
   useSync: (
     params: TParams | null | undefined,
-    options?: ReplicaSyncSchedule & { shouldRetryOnError?: boolean },
+    options?: GitReplicaSyncOptions<TStored> & { shouldRetryOnError?: boolean },
   ) => {
     error: unknown;
     isHydrated: boolean;
@@ -111,11 +116,11 @@ interface ReplicaReadSlice<TParams> {
  * SWR-like shape the Review / PR tabs were written against.
  */
 const useGitReviewReplica = <TParams, TStored>(
-  pick: (slices: GitReviewStore['slices']) => ReplicaReadSlice<TParams>,
+  pick: (slices: GitReviewStore['slices']) => ReplicaReadSlice<TParams, TStored>,
   selectMap: (state: GitReviewStore) => Record<string, TStored>,
   toKey: (params: TParams) => string,
   params: TParams | null,
-  schedule: ReplicaSyncSchedule,
+  schedule: GitReplicaSyncOptions<TStored>,
 ) => {
   const key = params ? toKey(params) : undefined;
   const stored = useGitReviewStore((s) => (key ? selectMap(s)[key] : undefined));
@@ -136,11 +141,11 @@ const useGitReviewReplica = <TParams, TStored>(
 
 /** A `GitReviewRead` replica, unwrapped into the SWR-shaped result. */
 const useGitReviewRead = <TParams, T>(
-  pick: (slices: GitReviewStore['slices']) => ReplicaReadSlice<TParams>,
+  pick: (slices: GitReviewStore['slices']) => ReplicaReadSlice<TParams, GitReviewRead<T>>,
   selectMap: (state: GitReviewStore) => Record<string, GitReviewRead<T>>,
   toKey: (params: TParams) => string,
   params: TParams | null,
-  schedule: ReplicaSyncSchedule,
+  schedule: GitReplicaSyncOptions<GitReviewRead<T>>,
 ): GitReplicaReadResult<T> => {
   const { stored, ...rest } = useGitReviewReplica(pick, selectMap, toKey, params, schedule);
   return { ...rest, data: stored?.value };
@@ -213,12 +218,27 @@ export const useFetchGitLinkedPR = (
     () => (enabled ? { branch: branch!, deviceId, path: path! } : null),
     [enabled, branch, deviceId, path],
   );
+  // The PR tab mounts the moment the linked PR is known; start reading its
+  // persisted detail / activity then, so the tab body paints from storage on
+  // its first frame instead of a skeleton while its own hydration reads them.
+  const warm = useCallback(
+    (read: GitReviewRead<GitLinkedPRSummary>) => {
+      const number = read.value?.pullRequest?.number;
+      if (number !== undefined && path) warmPullRequestReplicas({ deviceId, number, path });
+    },
+    [deviceId, path],
+  );
   return useGitReviewRead(
     (slices) => slices.linkedPR,
     (s) => s.gitLinkedPRMap,
     gitLinkedPRKey,
     params,
-    { dedupingInterval: 60 * 1000, focusThrottleInterval: 60 * 1000 },
+    {
+      dedupingInterval: 60 * 1000,
+      focusThrottleInterval: 60 * 1000,
+      onHydrated: warm,
+      onSuccess: warm,
+    },
   );
 };
 

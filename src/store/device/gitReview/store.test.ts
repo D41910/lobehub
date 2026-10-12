@@ -34,6 +34,7 @@ import {
   gitLinkedPRResource,
   gitPullRequestActivityResource,
   gitPullRequestDetailResource,
+  gitPullRequestKey,
   gitPullRequestMergeContextResource,
   gitReviewPatchesResource,
   type ReviewPatchesData,
@@ -358,6 +359,40 @@ describe('Review / PR tab replicas', () => {
       );
       await waitFor(() => expect(result.current.context.data?.requiredChecks).toEqual(['ci']));
       expect(gitService.getPullRequestDetail).toHaveBeenCalledWith({ ...PR, coreOnly: true });
+    });
+
+    // Regression: the PR tab mounts once the linked PR is known, and its own
+    // hydration then read the detail from storage — a skeleton frame in between.
+    it('reads the PR detail and activity from storage once the linked PR hydrates', async () => {
+      await Promise.all([
+        seed(gitLinkedPRResource, LINKED, {
+          value: {
+            pullRequest: { number: 42, state: 'open', title: 'Cached PR title', url: 'u' },
+            pullRequestStatus: 'ok',
+          },
+        }),
+        seed(gitPullRequestDetailResource, PR, { value: detailResult }),
+        seed(gitPullRequestActivityResource, PR, {
+          value: { comments: [{ author: 'a', body: 'cached comment' }], commits: [], reviews: [] },
+        }),
+      ]);
+      vi.mocked(gitService.getLinkedPullRequest).mockImplementation(pending);
+
+      // Only the linked-PR read is mounted: the PR tab is not rendered yet.
+      renderHook(() => useFetchGitLinkedPR('device-1', '/repo', 'feat/x', true), { wrapper });
+
+      const key = gitPullRequestKey(PR);
+      await waitFor(() =>
+        expect(
+          useGitReviewStore.getState().gitPullRequestDetailMap[key]?.value?.detail?.title,
+        ).toBe('Cached PR title'),
+      );
+      await waitFor(() =>
+        expect(
+          useGitReviewStore.getState().gitPullRequestActivityMap[key]?.value?.comments[0]?.body,
+        ).toBe('cached comment'),
+      );
+      expect(gitService.getPullRequestDetail).not.toHaveBeenCalled();
     });
 
     it('replaces the persisted detail with the gh read and persists it', async () => {

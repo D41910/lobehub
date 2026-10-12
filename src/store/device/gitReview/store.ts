@@ -22,6 +22,7 @@ import {
   gitLinkedPRResource,
   gitPullRequestActivityResource,
   gitPullRequestDetailResource,
+  gitPullRequestKey,
   type GitPullRequestMergeContextParams,
   gitPullRequestMergeContextResource,
   type GitPullRequestParams,
@@ -167,3 +168,15 @@ export const useGitReviewStore = createWithEqualityFn<GitReviewStore>()(
 );
 
 expose('gitReview', useGitReviewStore);
+
+/**
+ * Read a PR's persisted detail and activity into memory ahead of the PR tab's
+ * own hydration. Rows already in memory are left alone.
+ */
+export const warmPullRequestReplicas = (params: GitPullRequestParams) => {
+  const { gitPullRequestActivityMap, gitPullRequestDetailMap, slices } =
+    useGitReviewStore.getState();
+  const key = gitPullRequestKey(params);
+  if (!gitPullRequestDetailMap[key]) void slices.pullRequestDetail.hydrate(params);
+  if (!gitPullRequestActivityMap[key]) void slices.pullRequestActivity.hydrate(params);
+};
