@@ -23,6 +23,9 @@ const getDefaultReasonDetail = (finalState: any, reason?: string): string => {
 
 type EventCallback = (events: StreamEvent[]) => void;
 
+/** Matches Redis's two-hour inactivity TTL; streams are not trimmed by count. */
+const STREAM_RETENTION_MS = 2 * 3600 * 1000;
+
 /**
  * In-Memory Stream Event Manager
  * In-memory implementation for testing and local development environments
@@ -33,6 +36,15 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
   private eventIdCounter = 0;
   private lastPublishedAt = new Map<string, number>();
 
+  private evictExpiredStreams(): void {
+    const now = Date.now();
+    for (const [operationId, publishedAt] of this.lastPublishedAt) {
+      if (now - publishedAt <= STREAM_RETENTION_MS) continue;
+      this.streams.delete(operationId);
+      this.lastPublishedAt.delete(operationId);
+    }
+  }
+
   private generateEventId(): string {
     this.eventIdCounter++;
     return `${Date.now()}-${this.eventIdCounter}`;
@@ -42,11 +54,7 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
     operationId: string,
     event: Omit<StreamEvent, 'operationId' | 'timestamp'>,
   ): Promise<string> {
-    const lastPublished = this.lastPublishedAt.get(operationId);
-    if (lastPublished !== undefined && Date.now() - lastPublished > 2 * 3600 * 1000) {
-      this.streams.delete(operationId);
-      this.lastPublishedAt.delete(operationId);
-    }
+    this.evictExpiredStreams();
     const eventId = this.generateEventId();
 
     const eventData: StreamEvent = {
@@ -71,13 +79,6 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
     stream.push(eventData);
 
     this.lastPublishedAt.set(operationId, Date.now());
-    // Match Redis's two-hour inactivity retention without count trimming.
-    for (const [id, time] of this.lastPublishedAt) {
-      if (Date.now() - time > 2 * 3600 * 1000) {
-        this.streams.delete(id);
-        this.lastPublishedAt.delete(id);
-      }
-    }
 
     log('Published event %s for operation %s:%d', eventData.type, operationId, eventData.stepIndex);
 
@@ -153,19 +154,10 @@ export class InMemoryStreamEventManager implements IStreamEventManager {
   }
 
   async getStreamHistoryPage(operationId: string, cursor = '0', limit = 200) {
+    this.evictExpiredStreams();
     const stream = this.streams.get(operationId);
-    const expired = Date.now() - (this.lastPublishedAt.get(operationId) ?? 0) > 2 * 3600 * 1000;
-    if (expired) {
-      this.streams.delete(operationId);
-      this.lastPublishedAt.delete(operationId);
-    }
     const index = cursor === '0' ? -1 : (stream?.findIndex((event) => event.id === cursor) ?? -1);
-    if (
-      !stream ||
-      expired ||
-      (cursor !== '0' && index < 0) ||
-      stream[0]?.type !== 'agent_runtime_init'
-    ) {
+    if (!stream || (cursor !== '0' && index < 0) || stream[0]?.type !== 'agent_runtime_init') {
       return { available: false, events: [], hasMore: false, nextCursor: cursor };
     }
     const events = stream.slice(index + 1, index + 1 + limit);

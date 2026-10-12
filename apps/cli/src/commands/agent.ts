@@ -6,14 +6,13 @@ import { type Command, InvalidArgumentError } from 'commander';
 import pc from 'picocolors';
 
 import { getTrpcClient } from '../api/client';
-import { getAgentStreamAuthInfo } from '../api/http';
-import { resolveAgentGatewayUrl } from '../settings';
 import type { AgentRunOutcome } from '../utils/agentRunOutcome';
 import { AGENT_RUN_EXIT_CODES, colorStatus, readOperationStatus } from '../utils/agentRunOutcome';
-import { replayAgentEvents, streamAgentEventsViaWebSocket } from '../utils/agentStream';
+import { replayAgentEvents } from '../utils/agentStream';
 import { resolveLocalDeviceId } from '../utils/device';
 import { confirm, outputJson, printTable, truncate } from '../utils/format';
 import { log, setVerbose } from '../utils/logger';
+import { followAgentRun } from './agent/followRun';
 import { resolveAgentId } from './agent/resolveAgentId';
 import { pollAgentRunStatus, probeRunOutcome, RUN_POLL_INTERVAL_MS } from './agent/runStatus';
 import { registerAgentSpaceFsCommand } from './agent/spaceFs';
@@ -513,46 +512,25 @@ Exit codes:
           log.info(`Operation: ${pc.dim(operationId)} · Topic: ${pc.dim(r.topicId || 'n/a')}`);
         }
 
-        // 2. Connect to the agent gateway WebSocket
-        const { serverUrl, token, tokenType } = await getAgentStreamAuthInfo();
-        const agentGatewayUrl = resolveAgentGatewayUrl();
-
+        // 2. Follow the run over the agent gateway WebSocket
         const waitForRun = async (): Promise<AgentRunOutcome> => {
-          let streamed: AgentRunOutcome | undefined;
           try {
-            if (!agentGatewayUrl) throw new Error('Agent gateway URL is not configured');
-            streamed = await streamAgentEventsViaWebSocket({
-              gatewayUrl: agentGatewayUrl,
-              getAuth: getAgentStreamAuthInfo,
+            return await followAgentRun(operationId, {
               json: options.json,
               // A quiet stream is checked against the run status rather than
               // treated as finished or failed — a long tool call can be silent.
               onStall: () => probeRunOutcome(client, operationId, { json: options.json }),
-              operationId,
-              readHistory: (cursor, signal) =>
-                client.aiAgent.getOperationStreamHistory.query({ operationId, cursor }, { signal }),
-              serverUrl,
-              token,
-              tokenType,
               verbose: options.verbose,
             });
           } catch (error) {
-            if (error instanceof Error && error.name === 'AgentStreamHistoryError') {
-              log.error(error.message);
-              return { kind: 'unknown' };
-            }
-            // The live stream (gateway WebSocket) dropped before the run finished —
-            // the run may still be executing server-side, in --json mode too.
-            // Fall back to polling the run status until it reaches a terminal state.
+            // The live stream could not be followed at all — the run may still
+            // be executing server-side, in --json mode too. Fall back to polling
+            // the run status until it reaches a terminal state.
             log.warn(
               `Live stream unavailable (${(error as Error).message}). Polling run status every ${RUN_POLL_INTERVAL_MS / 1000}s…`,
             );
             return pollAgentRunStatus(client, operationId, { json: options.json });
           }
-
-          // The stream closed without a terminal event: that is not a success
-          // signal, so ask the server how the run actually ended.
-          return streamed ?? pollAgentRunStatus(client, operationId, { json: options.json });
         };
 
         let timeoutTimer: ReturnType<typeof setTimeout> | undefined;

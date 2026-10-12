@@ -1,13 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  replayAgentEvents,
-  streamAgentEventsViaWebSocket as streamAgentEventsViaWebSocketImpl,
-} from './agentStream';
+import type { AgentStreamEvent } from './agentStream';
+import { replayAgentEvents, streamAgentEventsViaWebSocket as streamImpl } from './agentStream';
+import type { AgentHistoryPage, AgentStreamAuth } from './agentStreamTransport';
+
+type StreamOptions = Parameters<typeof streamImpl>[0];
+
+/** Server journal backing the stream; the socket only carries wake-ups. */
+let journal: Array<AgentStreamEvent & { id: string }>;
+
+const readHistory = async (cursor: string): Promise<AgentHistoryPage> => {
+  const after = Number(cursor.split('-')[0]);
+  const events = journal.filter((event) => Number(event.id.split('-')[0]) > after);
+  return { available: true, events, hasMore: false, nextCursor: events.at(-1)?.id ?? cursor };
+};
+
+const testAuth: AgentStreamAuth = {
+  serverUrl: 'https://server.test',
+  token: 'test-token',
+  tokenType: 'jwt',
+};
 
 const streamAgentEventsViaWebSocket = (
-  options: Parameters<typeof streamAgentEventsViaWebSocketImpl>[0],
-) => streamAgentEventsViaWebSocketImpl({ maxRetries: 0, ...options });
+  options: Partial<StreamOptions> & Pick<StreamOptions, 'gatewayUrl' | 'operationId'>,
+) =>
+  streamImpl({
+    getAuth: async () => testAuth,
+    maxRetries: 0,
+    readHistory,
+    ...options,
+  });
+
+/** Append an event to the journal and notify over the gateway socket. */
+const emit = (event: Record<string, unknown>) => {
+  const id = `${journal.length + 1}-0`;
+  journal.push({ operationId: 'op-1', stepIndex: 0, timestamp: 0, ...event, id } as any);
+  capturedWs!.simulateMessage({ id, type: 'agent_event' });
+};
 
 vi.mock('./logger', () => ({
   log: {
@@ -80,6 +109,7 @@ describe('streamAgentEventsViaWebSocket', () => {
 
   beforeEach(() => {
     capturedWs = undefined;
+    journal = [];
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     (globalThis as any).WebSocket = MockWebSocket;
@@ -94,34 +124,39 @@ describe('streamAgentEventsViaWebSocket', () => {
   /** Wait for microtasks + short delay so WS open/auth cycle completes */
   const flush = () => new Promise((r) => setTimeout(r, 20));
 
-  it('should connect, authenticate, and send resume', async () => {
+  const end = (data: Record<string, unknown> = {}) =>
+    emit({ data: { reason: 'done', ...data }, type: 'agent_runtime_end' });
+
+  it('should connect, authenticate with fresh credentials, and send resume', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
 
     const ws = capturedWs!;
-    // Note: serverUrl is not set here, and JSON.stringify drops undefined keys,
-    // so the parsed auth message will not contain a `serverUrl` field.
     expect(ws.sent.map((s) => JSON.parse(s))).toEqual([
-      { token: 'test-token', tokenType: 'jwt', type: 'auth' },
+      { serverUrl: 'https://server.test', token: 'test-token', tokenType: 'jwt', type: 'auth' },
       { lastEventId: '', type: 'resume' },
     ]);
 
-    ws.simulateMessage({ id: '1', type: 'session_complete' });
+    end();
     await promise;
   });
 
   it('should send tokenType=apiKey and serverUrl when the caller uses an API key', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
+      // `getAgentStreamAuthInfo` also returns HTTP headers; they must not reach the gateway.
+      getAuth: async () =>
+        ({
+          headers: { 'X-API-Key': 'lh_sk_abc' },
+          serverUrl: 'https://app.lobehub.com',
+          token: 'lh_sk_abc',
+          tokenType: 'apiKey',
+        }) as AgentStreamAuth,
       operationId: 'op-1',
-      serverUrl: 'https://app.lobehub.com',
-      token: 'lh_sk_abc',
-      tokenType: 'apiKey',
     });
 
     await flush();
@@ -136,47 +171,21 @@ describe('streamAgentEventsViaWebSocket', () => {
       type: 'auth',
     });
 
-    ws.simulateMessage({ id: '1', type: 'session_complete' });
+    end();
     await promise;
   });
 
-  it('should render agent_event messages using existing renderEvent', async () => {
+  it('should render journal events woken by agent_event notifications', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
-    const ws = capturedWs!;
 
-    ws.simulateMessage({
-      event: { data: null, operationId: 'op-1', stepIndex: 0, timestamp: 1, type: 'step_start' },
-      id: '1',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { chunkType: 'text', content: 'Hello WS!' },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 2,
-        type: 'stream_chunk',
-      },
-      id: '2',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { stepCount: 1 },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 3,
-        type: 'agent_runtime_end',
-      },
-      id: '3',
-      type: 'agent_event',
-    });
+    emit({ data: null, type: 'step_start' });
+    emit({ data: { chunkType: 'text', content: 'Hello WS!' }, type: 'stream_chunk' });
+    end({ stepCount: 1 });
 
     await promise;
     expect(stdoutSpy).toHaveBeenCalledWith('Hello WS!');
@@ -187,34 +196,12 @@ describe('streamAgentEventsViaWebSocket', () => {
       gatewayUrl: 'https://gw.test.com',
       json: true,
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
-    const ws = capturedWs!;
 
-    ws.simulateMessage({
-      event: {
-        data: null,
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 1,
-        type: 'agent_runtime_init',
-      },
-      id: '1',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { stepCount: 1 },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 2,
-        type: 'agent_runtime_end',
-      },
-      id: '2',
-      type: 'agent_event',
-    });
+    emit({ data: null, type: 'agent_runtime_init' });
+    end({ stepCount: 1 });
 
     await promise;
 
@@ -247,16 +234,14 @@ describe('streamAgentEventsViaWebSocket', () => {
       streamAgentEventsViaWebSocket({
         gatewayUrl: 'https://gw.test.com',
         operationId: 'op-1',
-        token: 'bad-token',
       }),
     ).rejects.toThrow('Gateway auth failed');
   });
 
-  it('should reject when websocket onerror fires', async () => {
+  it('should reject once reconnects are exhausted after onerror', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
@@ -265,11 +250,10 @@ describe('streamAgentEventsViaWebSocket', () => {
     await expect(promise).rejects.toThrow('Agent gateway WebSocket failed');
   });
 
-  it('should reject when websocket closes before completion', async () => {
+  it('should reject once reconnects are exhausted after the socket closes', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
@@ -281,33 +265,38 @@ describe('streamAgentEventsViaWebSocket', () => {
     );
   });
 
-  it('should resolve on session_complete', async () => {
+  it('should resolve from the journal terminal on session_complete', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
+    journal.push({
+      data: { reason: 'done' },
+      id: '1-0',
+      operationId: 'op-1',
+      stepIndex: 0,
+      timestamp: 0,
+      type: 'agent_runtime_end',
+    });
     capturedWs!.simulateMessage({ id: '1', summary: 'All done', type: 'session_complete' });
 
-    await expect(promise).resolves.toBeUndefined();
+    await expect(promise).resolves.toEqual(expect.objectContaining({ kind: 'completed' }));
   });
 
   it('should ignore heartbeat_ack messages', async () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'test-token',
     });
 
     await flush();
-    const ws = capturedWs!;
 
-    ws.simulateMessage({ type: 'heartbeat_ack' });
+    capturedWs!.simulateMessage({ type: 'heartbeat_ack' });
     expect(stdoutSpy).not.toHaveBeenCalled();
 
-    ws.simulateMessage({ id: '1', type: 'session_complete' });
+    end();
     await promise;
   });
 
@@ -315,13 +304,20 @@ describe('streamAgentEventsViaWebSocket', () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://agent-gateway.lobehub.com',
       operationId: 'op-123',
-      token: 'tok',
     });
 
     await flush();
     expect(capturedWs!.url).toBe('wss://agent-gateway.lobehub.com/ws?operationId=op-123');
 
-    capturedWs!.simulateMessage({ id: '1', type: 'session_complete' });
+    journal.push({
+      data: { reason: 'done' },
+      id: '1-0',
+      operationId: 'op-123',
+      stepIndex: 0,
+      timestamp: 0,
+      type: 'agent_runtime_end',
+    });
+    capturedWs!.simulateMessage({ type: 'session_complete' });
     await promise;
   });
 
@@ -329,124 +325,38 @@ describe('streamAgentEventsViaWebSocket', () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 'tok',
       verbose: true,
     });
 
     await flush();
-    const ws = capturedWs!;
     const { log } = await import('./logger');
 
     // Step 1: thinking + text + tool call
-    ws.simulateMessage({
-      event: {
-        data: null,
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 1,
-        type: 'agent_runtime_init',
-      },
-      id: '1',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: { data: null, operationId: 'op-1', stepIndex: 0, timestamp: 2, type: 'step_start' },
-      id: '2',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { chunkType: 'reasoning', reasoning: 'Let me search...' },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 3,
-        type: 'stream_chunk',
-      },
-      id: '3',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { chunkType: 'text', content: 'Searching for news.' },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 4,
-        type: 'stream_chunk',
-      },
-      id: '4',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { toolCalling: { apiName: 'search', id: 'tc-1' } },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 5,
-        type: 'tool_start',
-      },
-      id: '5',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: { data: null, operationId: 'op-1', stepIndex: 0, timestamp: 6, type: 'stream_end' },
-      id: '6',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: { stepIndex: 0 },
-        operationId: 'op-1',
-        stepIndex: 0,
-        timestamp: 7,
-        type: 'step_complete',
-      },
-      id: '7',
-      type: 'agent_event',
-    });
+    emit({ data: null, type: 'agent_runtime_init' });
+    emit({ data: null, type: 'step_start' });
+    emit({ data: { chunkType: 'reasoning', reasoning: 'Let me search...' }, type: 'stream_chunk' });
+    emit({ data: { chunkType: 'text', content: 'Searching for news.' }, type: 'stream_chunk' });
+    emit({ data: { toolCalling: { apiName: 'search', id: 'tc-1' } }, type: 'tool_start' });
+    emit({ data: null, type: 'stream_end' });
+    emit({ data: { stepIndex: 0 }, type: 'step_complete' });
 
     // Step 2: tool result + final text
-    ws.simulateMessage({
-      event: { data: null, operationId: 'op-1', stepIndex: 1, timestamp: 8, type: 'step_start' },
-      id: '8',
-      type: 'agent_event',
-    });
-    ws.simulateMessage({
-      event: {
-        data: {
-          isSuccess: true,
-          payload: { toolCalling: { id: 'tc-1' } },
-          result: { content: 'Results...' },
-        },
-        operationId: 'op-1',
-        stepIndex: 1,
-        timestamp: 9,
-        type: 'tool_end',
+    emit({ data: null, stepIndex: 1, type: 'step_start' });
+    emit({
+      data: {
+        isSuccess: true,
+        payload: { toolCalling: { id: 'tc-1' } },
+        result: { content: 'Results...' },
       },
-      id: '9',
-      type: 'agent_event',
+      stepIndex: 1,
+      type: 'tool_end',
     });
-    ws.simulateMessage({
-      event: {
-        data: { chunkType: 'text', content: 'Here are the results.' },
-        operationId: 'op-1',
-        stepIndex: 1,
-        timestamp: 10,
-        type: 'stream_chunk',
-      },
-      id: '10',
-      type: 'agent_event',
+    emit({
+      data: { chunkType: 'text', content: 'Here are the results.' },
+      stepIndex: 1,
+      type: 'stream_chunk',
     });
-    ws.simulateMessage({
-      event: {
-        data: { cost: { total: 0.05 }, stepCount: 2, usage: { total_tokens: 500 } },
-        operationId: 'op-1',
-        stepIndex: 1,
-        timestamp: 11,
-        type: 'agent_runtime_end',
-      },
-      id: '11',
-      type: 'agent_event',
-    });
+    end({ cost: { total: 0.05 }, stepCount: 2, usage: { total_tokens: 500 } });
 
     await promise;
 
@@ -508,6 +418,7 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
 
   beforeEach(() => {
     capturedWs = undefined;
+    journal = [];
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -529,6 +440,10 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
     timestamp: Date.now(),
     type: 'agent_runtime_end',
   });
+  const emitEnd = (reason: string) => {
+    const { operationId: _, ...event } = endEvent(reason);
+    emit(event);
+  };
 
   describe.each([
     ['done', 'completed', 'Agent finished'],
@@ -540,10 +455,9 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
       const promise = streamAgentEventsViaWebSocket({
         gatewayUrl: 'https://gw.test.com',
         operationId: 'op-1',
-        token: 't',
       });
       await flush();
-      capturedWs!.simulateMessage({ event: endEvent(reason), id: '1', type: 'agent_event' });
+      emitEnd(reason);
 
       await expect(promise).resolves.toEqual(expect.objectContaining({ kind, status: reason }));
       expect(printed()).toContain(label);
@@ -555,14 +469,9 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 't',
     });
     await flush();
-    capturedWs!.simulateMessage({
-      event: { data: { message: 'boom' }, type: 'error' },
-      id: '1',
-      type: 'agent_event',
-    });
+    emit({ data: { message: 'boom' }, type: 'error' });
 
     await expect(promise).resolves.toEqual({ error: 'boom', kind: 'failed', status: 'error' });
   });
@@ -596,28 +505,7 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
     });
   });
 
-  it('a gateway that only acks heartbeats can no longer hang the stream forever', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-    const promise = streamAgentEventsViaWebSocket({
-      gatewayUrl: 'https://gw.test.com',
-      operationId: 'op-1',
-      stallTimeoutMs: 1000,
-      token: 't',
-    });
-    const settled = vi.fn();
-    promise.then(settled, settled);
-    await vi.advanceTimersByTimeAsync(0);
-
-    // heartbeat acks keep arriving but never count as progress
-    for (let i = 0; i < 5; i++) {
-      capturedWs!.simulateMessage({ type: 'heartbeat_ack' });
-      await vi.advanceTimersByTimeAsync(300);
-    }
-
-    await expect(promise).rejects.toThrow('sent no progress');
-  });
-
-  it('a quiet stream asks onStall and keeps waiting while the run is still active', async () => {
+  it('a quiet stream asks onStall, keeps waiting while active, and fails when the run ended without a journal terminal', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const onStall = vi
       .fn()
@@ -629,19 +517,19 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
       onStall,
       operationId: 'op-1',
       stallTimeoutMs: 1000,
-      token: 't',
     });
     const settled = vi.fn();
     promise.then(settled, settled);
+    const failure = expect(promise).rejects.toMatchObject({ name: 'AgentStreamHistoryError' });
 
     await vi.advanceTimersByTimeAsync(1000);
     expect(onStall).toHaveBeenCalledTimes(1);
     expect(settled).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(promise).resolves.toEqual({ kind: 'completed', status: 'done' });
+    await failure;
     expect(onStall).toHaveBeenCalledTimes(2);
-    expect(printed()).toContain('Agent finished');
+    expect(printed()).not.toContain('Agent finished');
   });
 
   it('real stream progress restarts the quiet window, so a slow healthy run is not probed', async () => {
@@ -652,21 +540,16 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
       onStall,
       operationId: 'op-1',
       stallTimeoutMs: 1000,
-      token: 't',
     });
     await vi.advanceTimersByTimeAsync(0);
 
     for (let i = 0; i < 10; i++) {
       await vi.advanceTimersByTimeAsync(700);
-      capturedWs!.simulateMessage({
-        event: { data: {}, stepIndex: 0, type: 'step_complete' },
-        id: String(i),
-        type: 'agent_event',
-      });
+      emit({ data: {}, type: 'step_complete' });
     }
     expect(onStall).not.toHaveBeenCalled();
 
-    capturedWs!.simulateMessage({ event: endEvent('done'), id: 'end', type: 'agent_event' });
+    emitEnd('done');
     await expect(promise).resolves.toEqual(expect.objectContaining({ kind: 'completed' }));
   });
 
@@ -689,12 +572,11 @@ describe('run outcome of the live stream (#19543 #19613 #19615)', () => {
     const promise = streamAgentEventsViaWebSocket({
       gatewayUrl: 'https://gw.test.com',
       operationId: 'op-1',
-      token: 't',
     });
     await flush();
     expect(unref).toHaveBeenCalled();
 
-    capturedWs!.simulateMessage({ event: endEvent('done'), id: '1', type: 'agent_event' });
+    emitEnd('done');
     await promise;
     intervalSpy.mockRestore();
   });
@@ -710,6 +592,7 @@ describe('--json prints exactly one array, even when no event arrived', () => {
 
   beforeEach(() => {
     capturedWs = undefined;
+    journal = [];
     fetchSpy = vi.spyOn(globalThis, 'fetch');
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     (globalThis as any).WebSocket = MockWebSocket;
@@ -742,23 +625,26 @@ describe('--json prints exactly one array, even when no event arrived', () => {
         gatewayUrl: 'https://gw.test.com',
         json: true,
         operationId: 'op-1',
-        token: 't',
       }),
     ).rejects.toThrow('Gateway auth failed');
     await flush(); // the close that follows must not print a second array
     expect(jsonOutputs()).toEqual([[]]);
   });
 
-  it('WebSocket session_complete with no events prints []', async () => {
-    const promise = streamAgentEventsViaWebSocket({
-      gatewayUrl: 'https://gw.test.com',
-      json: true,
-      operationId: 'op-1',
-      token: 't',
-    });
-    await flush();
-    capturedWs!.simulateMessage({ id: '1', type: 'session_complete' });
-    await promise;
+  it('an expired journal before any event prints [] once', async () => {
+    await expect(
+      streamAgentEventsViaWebSocket({
+        gatewayUrl: 'https://gw.test.com',
+        json: true,
+        operationId: 'op-1',
+        readHistory: async () => ({
+          available: false,
+          events: [],
+          hasMore: false,
+          nextCursor: '0',
+        }),
+      }),
+    ).rejects.toMatchObject({ name: 'AgentStreamHistoryError' });
     await flush();
     expect(jsonOutputs()).toEqual([[]]);
   });

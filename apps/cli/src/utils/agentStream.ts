@@ -3,7 +3,7 @@ import pc from 'picocolors';
 
 import type { AgentRunOutcome } from './agentRunOutcome';
 import { classifyRunStatus, describeOutcome } from './agentRunOutcome';
-import type { AgentHistoryPage } from './agentStreamTransport';
+import type { AgentStreamTransportOptions } from './agentStreamTransport';
 import { AgentStreamHistoryError, consumeAgentStream } from './agentStreamTransport';
 import { log } from './logger';
 
@@ -14,38 +14,18 @@ interface StreamOptions {
   verbose?: boolean;
 }
 
-interface LiveStreamOptions extends StreamOptions {
+interface WebSocketStreamOptions extends StreamOptions, AgentStreamTransportOptions {
   /**
    * Called when the stream has carried no progress for `stallTimeoutMs`. A
    * gateway can keep a connection alive with heartbeats while never
-   * delivering the terminal event, so silence alone
-   * must not be read as either "finished" or "failed". Return the run's
-   * outcome to finish, `undefined` when the run is still active (keep
-   * streaming), or throw to give up on the stream.
+   * delivering the terminal event, so silence alone must not be read as either
+   * "finished" or "failed". Return `undefined` while the run is still active
+   * (keep streaming). A terminal outcome means the journal is missing its
+   * terminal event, so the stream fails as incomplete; throwing does too.
    */
   onStall?: () => Promise<AgentRunOutcome | undefined>;
   /** Progress window before `onStall` is consulted. Defaults to 60s. */
   stallTimeoutMs?: number;
-}
-
-interface WebSocketStreamOptions extends LiveStreamOptions {
-  gatewayUrl: string;
-  getAuth?: () => Promise<{ serverUrl: string; token: string; tokenType: 'jwt' | 'apiKey' }>;
-  maxRetries?: number;
-  operationId: string;
-  readHistory?: (cursor: string, signal: AbortSignal) => Promise<AgentHistoryPage>;
-  /**
-   * LobeHub server URL the gateway should call back to when verifying
-   * an apiKey token (via `/api/v1/users/me`). Required when
-   * `tokenType === 'apiKey'`; ignored for JWT.
-   */
-  serverUrl?: string;
-  token: string;
-  /**
-   * How the gateway should verify `token`. `jwt` is the default for
-   * backwards compatibility with existing callers.
-   */
-  tokenType?: 'jwt' | 'apiKey';
 }
 
 /**
@@ -115,81 +95,59 @@ export function replayAgentEvents(
 }
 
 /**
- * Connect to the Agent Gateway via WebSocket and render events to the terminal.
- * Resolves with the run outcome once a terminal event arrives, `undefined` when
- * the gateway completed the session without one, and rejects when the
- * connection fails so the caller can fall back to polling.
+ * Follow an operation's events (Gateway WebSocket wake-ups + server journal)
+ * and render them to the terminal. Resolves with the outcome of the terminal
+ * event; rejects with `AgentStreamHistoryError` when the complete event
+ * history cannot be confirmed.
  */
 export async function streamAgentEventsViaWebSocket(
   options: WebSocketStreamOptions,
 ): Promise<AgentRunOutcome | undefined> {
+  const { onStall } = options;
   const jsonEvents: AgentStreamEvent[] = [];
   const ctx = createRenderContext();
   let outcome: AgentRunOutcome | undefined;
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
   let finished = false;
   let rejectStall: (error: Error) => void;
-  let resolveStall: () => void;
-  const stalled = new Promise<void>((resolve, reject) => {
-    resolveStall = resolve;
+  const stalled = new Promise<never>((_, reject) => {
     rejectStall = reject;
   });
   const armStallTimer = () => {
-    if (!options.onStall && options.readHistory) return;
+    if (!onStall) return;
     clearTimeout(stallTimer);
     stallTimer = setTimeout(async () => {
+      let message = 'Run status is terminal but the complete event history has no terminal event';
       try {
-        if (!options.onStall) {
-          rejectStall(
-            new Error('Agent gateway WebSocket sent no progress and never reported completion'),
-          );
-          return;
-        }
-        const result = await options.onStall!();
+        const result = await onStall();
         if (finished) return;
         if (!result) {
           armStallTimer();
           return;
         }
-        if (options.readHistory) {
-          rejectStall(
-            new AgentStreamHistoryError(
-              'Run status is terminal but the complete event history has no terminal event',
-            ),
-          );
-          return;
-        }
-        outcome = result;
-        if (!options.json) renderOutcome(result);
-        resolveStall();
       } catch (error) {
-        if (!finished) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          rejectStall(options.readHistory ? new AgentStreamHistoryError(failure.message) : failure);
-        }
+        if (finished) return;
+        message = error instanceof Error ? error.message : String(error);
       }
+      rejectStall(new AgentStreamHistoryError(message));
     }, options.stallTimeoutMs ?? STALL_TIMEOUT);
   };
-  const transport = consumeAgentStream(
-    options,
-    (event) => {
-      armStallTimer();
-      if (options.json) jsonEvents.push(event);
-      else renderEvent(event, ctx, options);
-      if (event.type === 'agent_runtime_end') {
-        outcome = outcomeFromEndEvent(event);
-        if (!options.json) renderEnd(event, outcome);
-        return true;
-      }
-      if (event.type === 'error') {
-        outcome = outcomeFromErrorEvent(event);
-        log.error(`Agent error: ${outcome.error}`);
-        return true;
-      }
-      return false;
-    },
-    () => {},
-  );
+  const transport = consumeAgentStream(options, (event) => {
+    armStallTimer();
+    if (options.json) jsonEvents.push(event);
+    else renderEvent(event, ctx, options);
+    if (event.type === 'agent_runtime_end') {
+      outcome = outcomeFromEndEvent(event);
+      if (!options.json) renderEnd(event, outcome);
+      return true;
+    }
+    if (event.type === 'error') {
+      outcome = outcomeFromErrorEvent(event);
+      log.error(`Agent error: ${outcome.error}`);
+      return true;
+    }
+    return false;
+  });
   armStallTimer();
   try {
     await Promise.race([transport.done, stalled]);
@@ -293,11 +251,6 @@ function renderEvent(event: AgentStreamEvent, ctx: RenderContext, options: Strea
       break;
     }
   }
-}
-
-function renderOutcome(outcome: AgentRunOutcome): void {
-  console.log();
-  console.log(describeOutcome(outcome));
 }
 
 function renderEnd(event: AgentStreamEvent, outcome: AgentRunOutcome): void {

@@ -162,6 +162,23 @@ export interface StreamChunkData {
   toolsCalling?: ChatToolPayload[];
 }
 
+/** Decode one Redis stream entry (`[id, [field, value, ...]]`) into a `StreamEvent`. */
+const parseStreamEntry = (id: string, fields: string[]): StreamEvent => {
+  const eventData: any = {};
+  for (let i = 0; i < fields.length; i += 2) {
+    const key = fields[i];
+    const value = fields[i + 1];
+    if (key === 'data') {
+      eventData[key] = JSON.parse(value);
+    } else if (key === 'stepIndex' || key === 'timestamp') {
+      eventData[key] = parseInt(value);
+    } else {
+      eventData[key] = value;
+    }
+  }
+  return { ...eventData, id } as StreamEvent;
+};
+
 export class StreamEventManager {
   private redis: Redis;
   private readonly STREAM_PREFIX = 'agent_runtime_stream';
@@ -356,26 +373,7 @@ export class StreamEventManager {
             const events: StreamEvent[] = [];
 
             for (const [id, fields] of messages) {
-              const eventData: any = {};
-
-              // Parse Redis Stream fields
-              for (let i = 0; i < fields.length; i += 2) {
-                const key = fields[i];
-                const value = fields[i + 1];
-
-                if (key === 'data') {
-                  eventData[key] = JSON.parse(value);
-                } else if (key === 'stepIndex' || key === 'timestamp') {
-                  eventData[key] = parseInt(value);
-                } else {
-                  eventData[key] = value;
-                }
-              }
-
-              events.push({
-                ...eventData,
-                id, // Redis Stream event ID
-              } as StreamEvent);
+              events.push(parseStreamEntry(id, fields));
 
               currentLastId = id;
             }
@@ -458,19 +456,7 @@ export class StreamEventManager {
     let currentLastId = fromId;
 
     for (const [id, fields] of messages) {
-      const eventData: any = {};
-      for (let i = 0; i < fields.length; i += 2) {
-        const key = fields[i];
-        const value = fields[i + 1];
-        if (key === 'data') {
-          eventData[key] = JSON.parse(value);
-        } else if (key === 'stepIndex' || key === 'timestamp') {
-          eventData[key] = parseInt(value);
-        } else {
-          eventData[key] = value;
-        }
-      }
-      events.push({ ...eventData, id } as StreamEvent);
+      events.push(parseStreamEntry(id, fields));
       currentLastId = id;
     }
 
@@ -486,24 +472,7 @@ export class StreamEventManager {
     try {
       const results = await this.redis.xrevrange(streamKey, '+', '-', 'COUNT', count);
 
-      return results.map(([id, fields]) => {
-        const eventData: any = { id };
-
-        for (let i = 0; i < fields.length; i += 2) {
-          const key = fields[i];
-          const value = fields[i + 1];
-
-          if (key === 'data') {
-            eventData[key] = JSON.parse(value);
-          } else if (key === 'stepIndex' || key === 'timestamp') {
-            eventData[key] = parseInt(value);
-          } else {
-            eventData[key] = value;
-          }
-        }
-
-        return eventData as StreamEvent;
-      });
+      return results.map(([id, fields]) => parseStreamEntry(id, fields));
     } catch (error) {
       console.error('[StreamEventManager] Failed to get stream history:', error);
       return [];
@@ -529,20 +498,7 @@ export class StreamEventManager {
       'COUNT',
       limit + 1,
     );
-    const events = rows.slice(0, limit).map(([id, fields]) => {
-      const record: Record<string, unknown> = { id };
-      for (let i = 0; i < fields.length; i += 2) {
-        const field = fields[i];
-        const value = fields[i + 1];
-        record[field] =
-          field === 'data'
-            ? JSON.parse(value)
-            : field === 'stepIndex' || field === 'timestamp'
-              ? Number(value)
-              : value;
-      }
-      return record as unknown as StreamEvent;
-    });
+    const events = rows.slice(0, limit).map(([id, fields]) => parseStreamEntry(id, fields));
     // Legacy streams may already have been trimmed before this deployment.
     if (cursor === '0' && events[0]?.type !== 'agent_runtime_init') return unavailable;
     return {

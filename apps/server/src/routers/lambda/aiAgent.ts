@@ -875,6 +875,27 @@ const assertCanUseOperationAgent = async (params: {
 };
 
 /**
+ * The initial operation insert is deliberately non-fatal, so a live run can
+ * exist only in runtime metadata. Accept its owner for a genuinely absent row,
+ * never for a persisted visitor-topic operation the visibility guard filtered.
+ */
+const isUnpersistedRuntimeOwner = async (params: {
+  db: LobeChatDatabase;
+  operationId: string;
+  userId: string;
+}) => {
+  const [persisted] = await params.db
+    .select({ id: agentOperations.id })
+    .from(agentOperations)
+    .where(eq(agentOperations.id, params.operationId))
+    .limit(1);
+  if (persisted) return false;
+
+  const metadata = await createAgentStateManager().getOperationMetadata(params.operationId);
+  return metadata?.userId === params.userId && !metadata.streamOwnerUserId;
+};
+
+/**
  * Ownership guard for operation-keyed READ endpoints (`getOperationStatus`,
  * `getPendingInterventions`). The runtime coordinator keys operations purely
  * by id and returns the raw operation metadata — including the executing
@@ -923,20 +944,8 @@ const assertOperationVisibleToCaller = async (params: {
   const notFound = () => new TRPCError({ code: 'NOT_FOUND', message: 'Operation not found' });
 
   if (!row) {
-    if (params.allowRuntimeOwner) {
-      // A deliberately non-fatal initial operation insert must not strand a
-      // live run. Fall back only for a genuinely absent row, never for a
-      // persisted visitor-topic operation filtered out by the guard above.
-      const [persisted] = await db
-        .select({ id: agentOperations.id })
-        .from(agentOperations)
-        .where(eq(agentOperations.id, operationId))
-        .limit(1);
-      if (!persisted) {
-        const metadata = await createAgentStateManager().getOperationMetadata(operationId);
-        if (metadata?.userId === userId && !metadata.streamOwnerUserId) return;
-      }
-    }
+    if (params.allowRuntimeOwner && (await isUnpersistedRuntimeOwner({ db, operationId, userId })))
+      return;
     throw notFound();
   }
   if (row.userId === userId) return;

@@ -10,15 +10,24 @@ export interface AgentHistoryPage {
   nextCursor: string;
 }
 
+export interface AgentStreamAuth {
+  /**
+   * LobeHub server URL the gateway calls back to when verifying an apiKey
+   * token (via `/api/v1/users/me`). Ignored for JWT.
+   */
+  serverUrl: string;
+  token: string;
+  /** How the gateway should verify `token`. */
+  tokenType: 'jwt' | 'apiKey';
+}
+
 export interface AgentStreamTransportOptions {
   gatewayUrl: string;
-  getAuth?: () => Promise<{ serverUrl: string; token: string; tokenType: 'jwt' | 'apiKey' }>;
+  /** Called for every (re)connect so a long run picks up refreshed credentials. */
+  getAuth: () => Promise<AgentStreamAuth>;
   maxRetries?: number;
   operationId: string;
-  readHistory?: (cursor: string, signal: AbortSignal) => Promise<AgentHistoryPage>;
-  serverUrl?: string;
-  token: string;
-  tokenType?: 'jwt' | 'apiKey';
+  readHistory: (cursor: string, signal: AbortSignal) => Promise<AgentHistoryPage>;
 }
 
 /** A missing/truncated history is not a successful recovery or a retryable network outage. */
@@ -29,282 +38,342 @@ export class AgentStreamHistoryError extends Error {
   }
 }
 
+const DEFAULT_MAX_RETRIES = 6;
+const CONNECT_TIMEOUT_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HISTORY_POLL_INTERVAL_MS = 5000;
+const HISTORY_REQUEST_TIMEOUT_MS = 10_000;
+const FATAL_TRPC_CODES = new Set(['UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND']);
+const REDIS_ID = /^\d+-\d+$/;
+
+const toError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
+
+const retryDelay = (attempt: number) => Math.min(1000 * 2 ** (attempt - 1), 15_000);
+
+/** Compare Redis stream ids numerically — lexical order breaks once the digit count changes. */
+const isAfter = (id: string, cursor: string) => {
+  const [time, sequence] = id.split('-').map(BigInt);
+  const [lastTime, lastSequence = 0n] = cursor.split('-').map(BigInt);
+  return time > lastTime || (time === lastTime && sequence > lastSequence);
+};
+
+/**
+ * Reads the authoritative server journal forward from an exclusive cursor.
+ * Concurrent wake-ups coalesce into one more pass; transient failures back off
+ * until the next wake-up, fatal ones throw `AgentStreamHistoryError`.
+ */
+class AgentEventJournal {
+  private abort?: AbortController;
+  private cursor = '0';
+  private failures = 0;
+  private nextAttemptAt = 0;
+  private pending = false;
+  private reading = false;
+  private stopped = false;
+
+  constructor(
+    private readonly options: AgentStreamTransportOptions & { maxRetries: number },
+    /** Returns `true` once the event is terminal, which ends the stream. */
+    private readonly onEvent: (event: AgentStreamEvent) => boolean,
+  ) {}
+
+  close() {
+    this.stopped = true;
+    this.abort?.abort();
+  }
+
+  /** Resolves `true` once a terminal event was delivered. */
+  async catchUp(): Promise<boolean> {
+    if (this.stopped || Date.now() < this.nextAttemptAt) return false;
+    if (this.reading) {
+      this.pending = true;
+      return false;
+    }
+    this.reading = true;
+    try {
+      do {
+        this.pending = false;
+        if (await this.readToEnd()) return true;
+      } while (this.pending && !this.stopped);
+      this.failures = 0;
+      this.nextAttemptAt = 0;
+      return false;
+    } catch (error) {
+      if (this.stopped) return false;
+      const failure = toError(error);
+      log.debug(`Agent history recovery failed: ${failure.message}`);
+      // tRPC auth/not-found responses must not be retried or masked by completion.
+      const code = (error as { data?: { code?: string } })?.data?.code;
+      if (
+        failure instanceof AgentStreamHistoryError ||
+        FATAL_TRPC_CODES.has(code ?? '') ||
+        ++this.failures > this.options.maxRetries
+      ) {
+        throw new AgentStreamHistoryError(`Complete history recovery failed: ${failure.message}`);
+      }
+      // The periodic poll retries transient failures even if the Gateway never
+      // sends another notification (including a lost terminal).
+      this.nextAttemptAt = Date.now() + retryDelay(this.failures);
+      return false;
+    } finally {
+      this.reading = false;
+    }
+  }
+
+  private async readToEnd(): Promise<boolean> {
+    let hasMore = true;
+    while (hasMore && !this.stopped) {
+      const page = await this.readPage();
+      if (this.stopped) return false;
+      if (!page.available)
+        throw new AgentStreamHistoryError(
+          'Agent event history expired, was trimmed, or is unavailable; complete recovery cannot be guaranteed',
+        );
+      for (const event of page.events) {
+        if (!event.id || !REDIS_ID.test(event.id) || event.operationId !== this.options.operationId)
+          throw new AgentStreamHistoryError('Invalid agent event history');
+        // A retried page can overlap the previous one.
+        if (!isAfter(event.id, this.cursor)) continue;
+        this.cursor = event.id;
+        if (this.onEvent(event)) return true;
+      }
+      if (page.nextCursor !== this.cursor || (page.hasMore && page.events.length === 0))
+        throw new AgentStreamHistoryError('Agent history cursor did not advance consistently');
+      hasMore = page.hasMore;
+    }
+    return false;
+  }
+
+  private async readPage(): Promise<AgentHistoryPage> {
+    const abort = new AbortController();
+    this.abort = abort;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.options.readHistory(this.cursor, abort.signal),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            abort.abort();
+            reject(new Error('Agent history request timed out'));
+          }, HISTORY_REQUEST_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      this.abort = undefined;
+    }
+  }
+}
+
+/**
+ * Gateway WebSocket used purely as a wake-up signal: every notification asks
+ * the journal to catch up. Owns auth, heartbeat and bounded reconnects.
+ */
+class GatewayWakeChannel {
+  private gatewayCursor = '';
+  private heartbeat?: ReturnType<typeof setInterval>;
+  private heartbeatPending = false;
+  private connectTimer?: ReturnType<typeof setTimeout>;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private retries = 0;
+  private stopped = false;
+  private ws?: WebSocket;
+
+  constructor(
+    private readonly options: AgentStreamTransportOptions & { maxRetries: number },
+    private readonly onWake: () => void,
+    private readonly onFatal: (error: Error) => void,
+  ) {}
+
+  /** Real progress proves the run is reachable, so the reconnect budget starts over. */
+  resetRetries() {
+    this.retries = 0;
+  }
+
+  connect() {
+    if (this.stopped) return;
+    const url = urlJoin(
+      this.options.gatewayUrl.replace(/^http/, 'ws'),
+      `/ws?operationId=${encodeURIComponent(this.options.operationId)}`,
+    );
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch (error) {
+      this.reconnect(toError(error));
+      return;
+    }
+    this.ws = socket;
+    this.connectTimer = setTimeout(
+      () => this.reconnect(new Error('Agent gateway connection/authentication timed out')),
+      CONNECT_TIMEOUT_MS,
+    );
+    socket.onopen = () => void this.authenticate(socket);
+    socket.onmessage = ({ data }) => {
+      if (this.stopped || socket !== this.ws) return;
+      try {
+        this.handleMessage(socket, JSON.parse(String(data)));
+      } catch (error) {
+        this.onFatal(new Error(`Invalid agent gateway message: ${toError(error).message}`));
+      }
+    };
+    socket.onerror = () => this.reconnect(new Error('Agent gateway WebSocket failed'));
+    socket.onclose = (event) => {
+      const error = new Error(
+        `Agent gateway WebSocket closed before completion (code ${event.code}${event.reason ? `: ${event.reason}` : ''})`,
+      );
+      // 1008 is a policy violation (e.g. a foreign operation): retrying cannot help.
+      if (event.code === 1008) this.onFatal(error);
+      else this.reconnect(error);
+    };
+  }
+
+  close() {
+    this.stopped = true;
+    clearTimeout(this.reconnectTimer);
+    this.closeSocket();
+  }
+
+  private async authenticate(socket: WebSocket) {
+    try {
+      const { serverUrl, token, tokenType } = await this.options.getAuth();
+      if (this.stopped || socket !== this.ws) return;
+      socket.send(JSON.stringify({ serverUrl, token, tokenType, type: 'auth' }));
+    } catch (error) {
+      this.onFatal(new Error(`Agent gateway credentials unavailable: ${toError(error).message}`));
+    }
+  }
+
+  private handleMessage(
+    socket: WebSocket,
+    message: { id?: string; reason?: string; type: string },
+  ) {
+    switch (message.type) {
+      case 'auth_failed': {
+        this.onFatal(new Error(`Gateway auth failed: ${message.reason}`));
+        return;
+      }
+      case 'auth_success': {
+        clearTimeout(this.connectTimer);
+        socket.send(JSON.stringify({ lastEventId: this.gatewayCursor, type: 'resume' }));
+        this.startHeartbeat(socket);
+        this.onWake();
+        return;
+      }
+      case 'heartbeat_ack': {
+        this.heartbeatPending = false;
+        this.retries = 0;
+        return;
+      }
+      case 'agent_event': {
+        if (message.id) this.gatewayCursor = message.id;
+        this.onWake();
+        return;
+      }
+      // Not a success signal: only a terminal event in the journal ends the run.
+      case 'session_complete': {
+        this.onWake();
+        return;
+      }
+    }
+  }
+
+  private startHeartbeat(socket: WebSocket) {
+    clearInterval(this.heartbeat);
+    this.heartbeatPending = false;
+    this.heartbeat = setInterval(() => {
+      if (this.heartbeatPending) {
+        this.reconnect(new Error('Agent gateway heartbeat timed out'));
+        return;
+      }
+      this.heartbeatPending = true;
+      socket.send(JSON.stringify({ type: 'heartbeat' }));
+    }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeat.unref?.();
+  }
+
+  private reconnect(error: Error) {
+    if (this.stopped || this.reconnectTimer) return;
+    this.closeSocket();
+    // Recover the terminal from the server even when the Gateway is down.
+    this.onWake();
+    if (++this.retries > this.options.maxRetries) {
+      this.onFatal(
+        new Error(`Reconnect attempts exhausted; complete history not confirmed: ${error.message}`),
+      );
+      return;
+    }
+    const delay = retryDelay(this.retries);
+    log.debug(
+      `Agent WebSocket reconnect ${this.retries}/${this.options.maxRetries} in ${delay}ms: ${error.message}`,
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.connect();
+    }, delay);
+  }
+
+  private closeSocket() {
+    clearTimeout(this.connectTimer);
+    clearInterval(this.heartbeat);
+    const ws = this.ws;
+    if (!ws) return;
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+    this.ws = undefined;
+  }
+}
+
 /**
  * WS is the wake-up channel; the authenticated server journal is authoritative.
  * This avoids mixing two unrelated cursor spaces (Gateway ids vs Redis ids),
  * live/replay races, and dependence on the Gateway's in-memory buffer.
+ *
+ * `done` resolves after the terminal event and rejects only with
+ * `AgentStreamHistoryError`: any failure means the output may be incomplete.
  */
 export const consumeAgentStream = (
   options: AgentStreamTransportOptions,
   onEvent: (event: AgentStreamEvent) => boolean,
-  onComplete: () => void,
-): { done: Promise<void>; close: () => void } => {
+): { close: () => void; done: Promise<void> } => {
+  const resolved = { ...options, maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES };
   let stopped = false;
-  let ws: WebSocket | undefined;
-  let cursor = '0';
-  let gatewayCursor = '';
-  let retries = 0;
-  let recovering = false;
-  let recoveryRequested = false;
-  let recoveryFailures = 0;
-  let nextRecoveryAt = 0;
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  let connectionTimer: ReturnType<typeof setTimeout> | undefined;
-  let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let historyTimer: ReturnType<typeof setInterval> | undefined;
-  let historyRequestTimer: ReturnType<typeof setTimeout> | undefined;
-  let historyAbort: AbortController | undefined;
-  let heartbeatPending = false;
   let resolveDone: () => void;
   let rejectDone: (error: Error) => void;
-  const seenGatewayIds = new Set<string>();
   const done = new Promise<void>((resolve, reject) => {
     resolveDone = resolve;
     rejectDone = reject;
   });
-  const maxRetries = options.maxRetries ?? 6;
 
-  const closeSocket = () => {
-    clearTimeout(connectionTimer);
-    clearInterval(heartbeat);
-    if (!ws) return;
-    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
-    ws = undefined;
+  const journal = new AgentEventJournal(resolved, (event) => {
+    gateway.resetRetries();
+    return onEvent(event);
+  });
+  const catchUp = () => {
+    journal.catchUp().then((terminal) => terminal && finish(), fail);
   };
+  const gateway = new GatewayWakeChannel(resolved, catchUp, (error) => fail(error));
+  const poll = setInterval(catchUp, HISTORY_POLL_INTERVAL_MS);
+
   const close = () => {
     if (stopped) return;
     stopped = true;
-    clearTimeout(reconnectTimer);
-    clearInterval(historyTimer);
-    clearTimeout(historyRequestTimer);
-    historyAbort?.abort();
-    closeSocket();
+    clearInterval(poll);
+    journal.close();
+    gateway.close();
   };
   const finish = () => {
     close();
     resolveDone();
   };
   const fail = (error: Error) => {
+    if (stopped) return;
     close();
     rejectDone(
-      options.readHistory && !(error instanceof AgentStreamHistoryError)
-        ? new AgentStreamHistoryError(error.message)
-        : error,
+      error instanceof AgentStreamHistoryError ? error : new AgentStreamHistoryError(error.message),
     );
   };
-  const retryDelay = (attempt: number) => Math.min(1000 * 2 ** (attempt - 1), 15_000);
 
-  const recover = async () => {
-    if (stopped || !options.readHistory || Date.now() < nextRecoveryAt) return;
-    if (recovering) {
-      recoveryRequested = true;
-      return;
-    }
-    recovering = true;
-    try {
-      do {
-        recoveryRequested = false;
-        let more = true;
-        while (more && !stopped) {
-          historyAbort = new AbortController();
-          let page: AgentHistoryPage;
-          try {
-            page = await Promise.race([
-              options.readHistory(cursor, historyAbort.signal),
-              new Promise<never>((_, reject) => {
-                historyRequestTimer = setTimeout(() => {
-                  historyAbort?.abort();
-                  reject(new Error('Agent history request timed out'));
-                }, 10_000);
-              }),
-            ]);
-          } finally {
-            clearTimeout(historyRequestTimer);
-            historyAbort = undefined;
-          }
-          if (stopped) return;
-          if (!page.available)
-            throw new AgentStreamHistoryError(
-              'Agent event history expired, was trimmed, or is unavailable; complete recovery cannot be guaranteed',
-            );
-          for (const event of page.events) {
-            if (
-              !event.id ||
-              !/^\d+-\d+$/.test(event.id) ||
-              event.operationId !== options.operationId
-            )
-              throw new AgentStreamHistoryError('Invalid agent event history');
-            // A retried page can overlap; compare Redis ids numerically, not lexically.
-            const [time, sequence] = event.id.split('-').map(BigInt);
-            const [lastTime, lastSequence = 0n] = cursor.split('-').map(BigInt);
-            if (time < lastTime || (time === lastTime && sequence <= lastSequence)) continue;
-            cursor = event.id;
-            retries = 0;
-            if (onEvent(event)) {
-              finish();
-              return;
-            }
-          }
-          if (page.nextCursor !== cursor || (page.hasMore && page.events.length === 0))
-            throw new AgentStreamHistoryError('Agent history cursor did not advance consistently');
-          more = page.hasMore;
-        }
-      } while (recoveryRequested && !stopped);
-      recoveryFailures = 0;
-      nextRecoveryAt = 0;
-    } catch (error) {
-      if (stopped) return;
-      const failure = error instanceof Error ? error : new Error(String(error));
-      log.debug(`Agent history recovery failed: ${failure.message}`);
-      // tRPC auth/not-found responses must not be retried or masked by completion.
-      const code = (error as { data?: { code?: string } })?.data?.code;
-      if (
-        failure instanceof AgentStreamHistoryError ||
-        ['UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND'].includes(code ?? '') ||
-        ++recoveryFailures > maxRetries
-      ) {
-        fail(new AgentStreamHistoryError(`Complete history recovery failed: ${failure.message}`));
-      } else {
-        nextRecoveryAt = Date.now() + retryDelay(recoveryFailures);
-      }
-      // The periodic recovery tick retries transient HTTP failures even if the
-      // Gateway never sends another notification (including a lost terminal).
-    } finally {
-      recovering = false;
-    }
-  };
-
-  const reconnect = (error: Error) => {
-    if (stopped || reconnectTimer) return;
-    closeSocket();
-    // Recover the terminal from the server even when the Gateway is down.
-    void recover();
-    if (++retries > maxRetries) {
-      fail(
-        options.readHistory
-          ? new AgentStreamHistoryError(
-              `Reconnect attempts exhausted; complete history not confirmed: ${error.message}`,
-            )
-          : error,
-      );
-      return;
-    }
-    const delay = retryDelay(retries);
-    log.debug(`Agent WebSocket reconnect ${retries}/${maxRetries} in ${delay}ms: ${error.message}`);
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = undefined;
-      connect();
-    }, delay);
-  };
-
-  const connect = () => {
-    if (stopped) return;
-    const url = urlJoin(
-      options.gatewayUrl.replace(/^http/, 'ws'),
-      `/ws?operationId=${encodeURIComponent(options.operationId)}`,
-    );
-    try {
-      ws = new WebSocket(url);
-    } catch (error) {
-      reconnect(error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
-    const socket = ws;
-    connectionTimer = setTimeout(
-      () => reconnect(new Error('Agent gateway connection/authentication timed out')),
-      10_000,
-    );
-    socket.onopen = async () => {
-      try {
-        const auth = options.getAuth ? await options.getAuth() : options;
-        if (stopped || socket !== ws) return;
-        socket.send(
-          JSON.stringify({
-            serverUrl: auth.serverUrl,
-            token: auth.token,
-            tokenType: auth.tokenType ?? 'jwt',
-            type: 'auth',
-          }),
-        );
-      } catch (error) {
-        fail(
-          new Error(
-            `Agent gateway credentials unavailable: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-      }
-    };
-    socket.onmessage = ({ data }) => {
-      if (stopped || socket !== ws) return;
-      try {
-        const message = JSON.parse(String(data));
-        if (message.type === 'auth_failed') {
-          const reason = `Gateway auth failed: ${message.reason}`;
-          fail(options.readHistory ? new AgentStreamHistoryError(reason) : new Error(reason));
-          return;
-        }
-        if (message.type === 'auth_success') {
-          clearTimeout(connectionTimer);
-          heartbeatPending = false;
-          socket.send(JSON.stringify({ lastEventId: gatewayCursor, type: 'resume' }));
-          void recover();
-          clearInterval(heartbeat);
-          heartbeat = setInterval(() => {
-            if (heartbeatPending) {
-              reconnect(new Error('Agent gateway heartbeat timed out'));
-              return;
-            }
-            heartbeatPending = true;
-            socket.send(JSON.stringify({ type: 'heartbeat' }));
-          }, 30_000);
-          heartbeat.unref?.();
-          return;
-        }
-        if (message.type === 'heartbeat_ack') {
-          heartbeatPending = false;
-          retries = 0;
-          return;
-        }
-        if (message.type === 'agent_event') {
-          if (message.id) gatewayCursor = message.id;
-          if (options.readHistory) {
-            void recover();
-            return;
-          }
-          if (message.id && seenGatewayIds.has(message.id)) return;
-          if (message.id) seenGatewayIds.add(message.id);
-          if (onEvent(message.event)) finish();
-        }
-        if (message.type === 'session_complete') {
-          if (options.readHistory) {
-            void recover();
-            return;
-          }
-          onComplete();
-          finish();
-        }
-      } catch (error) {
-        fail(
-          new Error(
-            `Invalid agent gateway message: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-      }
-    };
-    socket.onerror = () => reconnect(new Error('Agent gateway WebSocket failed'));
-    socket.onclose = (event) => {
-      const error = new Error(
-        `Agent gateway WebSocket closed before completion (code ${event.code}${event.reason ? `: ${event.reason}` : ''})`,
-      );
-      if (event.code === 1008) fail(error);
-      else reconnect(error);
-    };
-  };
-  if (options.readHistory)
-    historyTimer = setInterval(() => {
-      void recover();
-    }, 5_000);
-  connect();
+  gateway.connect();
   return { close, done };
 };

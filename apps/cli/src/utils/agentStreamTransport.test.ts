@@ -60,8 +60,12 @@ describe('recoverable WebSocket transport', () => {
   const options = () => ({
     gatewayUrl: 'https://gateway.test',
     operationId: 'op-1',
+    getAuth: async () => ({
+      serverUrl: 'https://server.test',
+      token: 'test',
+      tokenType: 'jwt' as const,
+    }),
     readHistory,
-    token: 'test',
   });
 
   beforeEach(() => {
@@ -170,11 +174,7 @@ describe('recoverable WebSocket transport', () => {
   });
 
   it('rejects authorization failures immediately, with no reconnect', async () => {
-    const consumer = consumeAgentStream(
-      options(),
-      () => false,
-      () => {},
-    );
+    const consumer = consumeAgentStream(options(), () => false);
     const failure = expect(consumer.done).rejects.toThrow('Gateway auth failed');
     sockets[0].message({ reason: 'foreign operation', type: 'auth_failed' });
     await flush();
@@ -184,11 +184,7 @@ describe('recoverable WebSocket transport', () => {
   });
 
   it('detects a half-open socket via missed heartbeat acknowledgements', async () => {
-    const consumer = consumeAgentStream(
-      options(),
-      () => false,
-      () => {},
-    );
+    const consumer = consumeAgentStream(options(), () => false);
     await flush();
     await vi.advanceTimersByTimeAsync(61_000);
     expect(sockets).toHaveLength(2);
@@ -244,11 +240,7 @@ describe('recoverable WebSocket transport', () => {
         }
       },
     );
-    const consumer = consumeAgentStream(
-      { ...options(), maxRetries: 2 },
-      () => false,
-      () => {},
-    );
+    const consumer = consumeAgentStream({ ...options(), maxRetries: 2 }, () => false);
     const failure = expect(consumer.done).rejects.toMatchObject({
       name: 'AgentStreamHistoryError',
     });
